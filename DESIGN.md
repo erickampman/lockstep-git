@@ -69,8 +69,9 @@ a tiny JSON blob).
 
 3. **CLI + UI — both thin clients of the daemon socket**
    - CLI: `lockstep status`, `lockstep why` (explain the last block), config.
-   - UI: **Qt `QSystemTrayIcon`** menubar/tray — green/yellow/red per repo + a
-     desktop notification when the other machine goes dirty.
+   - UI: **gtkmm** tray/menubar indicator — green/yellow/red per repo + a
+     desktop notification when the other machine goes dirty. (Tray specifics and
+     the macOS caveat under Technology decisions.)
 
 ## Technology decisions
 
@@ -80,18 +81,37 @@ a tiny JSON blob).
   this is Eric's own two machines / a personal repo). C considered but C++ wins for
   JSON/HTTP ergonomics. Swift is **not** viable as the shared core (no real Linux
   GUI story) — only a possible optional Mac-native front-end later, bolted on over
-  the C++ daemon. **Not needed** given Qt covers both platforms with one codebase.
-- **UI: Qt (`QSystemTrayIcon`)** — one C++ UI codebase for both mac + linux. Chosen
-  over the Swift(mac)+DGL(linux) split specifically because it's a *public* repo and
-  two UI codebases isn't worth maintaining.
+  the C++ daemon.
+- **UI: gtkmm (GTK C++ bindings)** — one C++ UI codebase for both mac + linux.
+  Chosen over the Swift(mac)+DGL(linux) split specifically because it's a *public*
+  repo and two UI codebases isn't worth maintaining. **Supersedes the earlier Qt
+  decision** (Eric's call: prefers GTK/gtkmm). Because the UI is a thin client of the
+  daemon socket, the toolkit choice is isolated to the tray target and can be
+  revisited without touching the core.
+  - **Tray mechanism:** `GtkStatusIcon` is deprecated (GTK3) / removed (GTK4), so the
+    tray is a **StatusNotifierItem** via `libayatana-appindicator`. This is the
+    standard, well-supported path on Linux (GNOME needs an AppIndicator extension;
+    KDE/most others host SNI natively).
+  - **macOS caveat (eyes open):** GTK on macOS runs through the X-less quartz backend
+    and there is **no native menubar-tray integration** — the AppIndicator/SNI path
+    that works on Linux does not surface in the macOS system menubar. Options when we
+    get to the Mac tray: (a) ship the daemon + CLI + hooks on Mac now (this slice)
+    and treat the tray as Linux-first; (b) a tiny Mac-native `NSStatusItem`
+    front-end later (the "optional Mac-native front-end" noted above), still a thin
+    client of the daemon socket; or (c) revisit. Not blocking — the tray is deferred.
 - **Libraries:** libgit2 (or shell out to `git`) for repo ops; libcurl for the
   GitHub rendezvous; nlohmann/json (header-only) for state blobs.
-- **Build system: CMake as the single source of truth** (builds on both platforms;
-  first-class Qt support). Editor is a free choice on top:
-  - **VS Code + CMake Tools + clangd** day-to-day — identical on both machines.
+- **Build system: CMake as the single source of truth** (builds on both platforms).
+  Editor is a free choice on top:
+  - **VS Code + CMake Tools + clangd** day-to-day — identical on both machines
+    (`CMAKE_EXPORT_COMPILE_COMMANDS` is on, so clangd gets `compile_commands.json`).
   - `cmake -G Xcode` when you want Xcode's lldb/Instruments — generated, never
     committed. `.gitignore` the build dir and any `*.xcodeproj`.
   - Do NOT make an `.xcodeproj` the canonical build (Mac-only, won't build on Linux).
+  - **Generator: Ninja, not Unix Makefiles.** The active Xcode on this Mac lives at
+    `/Applications/Xcode 26.3.app` — the space in the path breaks the Makefiles
+    generator's sub-make invocation at compiler-detection time. `cmake -G Ninja`
+    sidesteps it (and is faster). Configure with `cmake -S . -B build -G Ninja`.
 
 ## macOS startup (the daemon-launch question)
 
@@ -194,12 +214,42 @@ authenticity · no asymmetric · no MITM surface.**
 Cost estimate: private rendezvous ≈ free; symmetric AEAD layer ≈ half a day;
 keychain/libsecret integration ≈ +1 day (deferred); asymmetric ≈ don't.
 
+## Progress
+
+**Slice 1 — CMake infra + daemon/CLI/hook spine — DONE (2026-09-18).**
+The vertical spine builds and runs end-to-end on the Mac:
+- `CMakeLists.txt` (top-level) + per-target `src/{common,daemon,cli}/CMakeLists.txt`.
+  nlohmann/json pulled via `FetchContent` (no brew dep for the core build).
+- `src/common/` — shared static lib: socket-path resolution (`paths.{h,cpp}`,
+  honors `$LOCKSTEP_SOCKET`/`$XDG_RUNTIME_DIR`, else `~/.lockstep/daemon.sock`) and a
+  blocking newline-delimited-JSON Unix-socket transport (`ipc.{h,cpp}`).
+- `src/daemon/` — `lockstepd`: plain foreground process, `sigaction`-based (no
+  SA_RESTART) SIGTERM/SIGINT handling so the accept loop actually wakes and cleans up
+  the socket; answers `ping`/`verdict`/`status` with a **hardcoded "clear"** verdict.
+- `src/cli/` — `lockstep {ping,status,verdict}`, thin socket client; `verdict` exits
+  0 clear / 1 blocked / 1 if daemon unreachable (fail-closed for now).
+- `hooks/pre-commit` — thin client that relays the verdict; `LOCKSTEP_SKIP=1` escape
+  hatch; no-ops if the CLI isn't installed (absent guard shouldn't block commits).
+- `.gitignore` — build dirs, `*.xcodeproj`, `compile_commands.json`, `.DS_Store`.
+
+Verified: daemon up → `verdict` clear/exit 0; SIGTERM → clean exit + socket removed;
+daemon down → clear error + exit 1; hook relays exit code.
+
+**Deferred deliberately (not yet built):** Qt→gtkmm tray, FSEvents/repo watching, the
+GitHub rendezvous (decision A metadata blob) + libsodium AEAD, LaunchAgent plist +
+systemd user unit, `pre-push` hook, `lockstep install` subcommand, `lockstep why`.
+
 ## Suggested next steps on the Mac
 
-1. `git clone` on the Mac; set up the private rendezvous (private repo or secret gist)
-   and generate + copy the shared key out of band.
-2. Scaffold: CMake project with `lockstepd` (daemon), `lockstep` (CLI), and a Qt tray
-   target; `.gitignore` (build dir, `*.xcodeproj`); the `pre-commit`/`pre-push` hook
-   client; a GitHub-rendezvous stub (decision A: metadata JSON blob) with the
-   libsodium AEAD layer; the LaunchAgent plist + systemd user unit; an `install`
-   subcommand.
+1. **Repo watching + real verdict.** Teach `lockstepd` a config of watched repo
+   roots; on `verdict`/`status`, shell out to `git` (`status --porcelain`,
+   rev-list ahead/behind) to compute *this* machine's state. Wire `status` to report
+   real per-repo dirty/ahead/behind. (Verdict still "clear" until the rendezvous
+   exists — there's no other-machine state yet.)
+2. **GitHub rendezvous (decision A).** Set up the private rendezvous (private repo or
+   secret gist); generate + copy the shared key out of band; daemon publishes this
+   machine's metadata JSON blob and caches the other machine's, gated by the
+   libsodium AEAD layer. Now `verdict` can actually block.
+3. `lockstep install` subcommand (writes the LaunchAgent plist / systemd user unit
+   and installs the hooks) + the `pre-push` hook.
+4. gtkmm tray (Linux-first; see the macOS caveat under Technology decisions).

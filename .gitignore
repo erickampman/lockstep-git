@@ -1,0 +1,13 @@
+# Build output (CMake is the source of truth; build dirs are generated, never committed)
+/build/
+/build-*/
+/cmake-build-*/
+
+# Generated project files — never canonical (see DESIGN.md)
+*.xcodeproj/
+*.xcworkspace/
+
+# Editor / OS cruft
+.cache/
+compile_commands.json
+.DS_Store

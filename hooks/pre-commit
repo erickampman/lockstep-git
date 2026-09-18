@@ -1,0 +1,30 @@
+#!/bin/sh
+# lockstep-git pre-commit hook — the funnel.
+#
+# Asks the local daemon "am I clear to commit?" and blocks (non-zero exit) if
+# the other machine has pending work. Thin by design: all the logic lives in
+# the daemon; this just relays the verdict.
+#
+# Install: symlink or copy into a repo's .git/hooks/pre-commit (the `lockstep
+# install` subcommand will do this in a later slice).
+#
+# Escape hatch: set LOCKSTEP_SKIP=1 to bypass (same spirit as `git commit -n`).
+
+[ "${LOCKSTEP_SKIP:-0}" = "1" ] && exit 0
+
+# Find the CLI: prefer one on PATH, else a conventional install location.
+if command -v lockstep >/dev/null 2>&1; then
+    LOCKSTEP=lockstep
+elif [ -x "$HOME/.local/bin/lockstep" ]; then
+    LOCKSTEP="$HOME/.local/bin/lockstep"
+else
+    # Not installed — don't block commits just because the guard is absent.
+    exit 0
+fi
+
+if "$LOCKSTEP" verdict; then
+    exit 0
+else
+    echo "⛔ lockstep: blocked (run 'lockstep status' for details, or LOCKSTEP_SKIP=1 to override)" >&2
+    exit 1
+fi
