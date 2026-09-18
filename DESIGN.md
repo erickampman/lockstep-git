@@ -135,10 +135,10 @@ a tiny JSON blob).
   Homebrew formula / domain planned — so an `install` subcommand that writes the
   plist/systemd unit is the distribution path, not `brew services`).
 
-## OPEN DECISION — the A/B fork (shapes the daemon's core loop)
+## The A/B fork — RESOLVED: A now, B opt-in later
 
-The one unresolved decision. The hard case is **uncommitted changes on the other
-machine that were never pushed anywhere** — GitHub can't see them.
+The hard case is **uncommitted changes on the other machine that were never pushed
+anywhere** — GitHub can't see them.
 
 - **(A) Metadata-only.** Daemon publishes *facts about* dirty state (file count,
   names, mtime, ahead/behind, timestamp). Cheap, safe, private. But you can only
@@ -147,14 +147,59 @@ machine that were never pushed anywhere** — GitHub can't see them.
   `wip/<machine>` branch, so the other machine can actually *see and pull* it. True
   "best of both worlds," at the cost of pushing messy WIP to GitHub.
 
-**Decide this before writing the daemon's tick loop.** (Possible middle path: start
-with A, add B as an opt-in per-repo setting.)
+**Decision: ship (A) first; add (B) later as an opt-in per-repo setting.** (A)
+delivers the warning behavior — 90% of the value and the original ask — with far
+less machinery: the tick loop just gathers stats and writes a JSON blob, no throwaway
+commits/branches to manage. (B) is deferred until there's a repo where pulling the
+actual WIP is worth the noise.
+
+## Security model
+
+Threat: the published metadata leaks **filenames of in-progress work**, activity
+timestamps (a behavioral fingerprint), and local paths/usernames. Almost all of the
+exposure comes from the rendezvous being *public*, not from the data being inherently
+secret.
+
+**Design (simple by construction — no MITM surface):**
+
+1. **Private rendezvous, not the public code repo.** Publish metadata to a
+   **private repo or a secret gist**, separate from `lockstep-git` itself. GitHub
+   auth then gates it for free: not world-readable, TLS in transit, encrypted at rest
+   on GitHub's servers. This removes most of the exposure at ~zero cost and is done
+   regardless of the crypto below.
+2. **Symmetric AEAD for at-rest + authenticity (belt-and-suspenders).**
+   - **libsodium** `crypto_aead_xchacha20poly1305` (or `crypto_secretbox`), fresh
+     nonce per message prepended to the ciphertext. ~30 lines.
+   - **One shared symmetric key, copied out of band once** (AirDrop / password
+     manager / paste) between the two machines. This is NOT a key-*exchange*
+     protocol — the out-of-band copy *is* the authentication, so there is **no MITM
+     surface**. Contrast the trap of asymmetric key exchange *through* the rendezvous:
+     anyone who can write to it (or a compromised GitHub) could substitute a public
+     key — textbook MITM. Avoided entirely.
+   - AEAD's auth tag gives **confidentiality + integrity/authenticity in one move**:
+     a third party who can write to the rendezvous can't forge or tamper without the
+     key (tampered blob fails the tag), and a valid blob is implicitly "from one of my
+     machines" (only key-holders can produce a valid tag).
+   - **Key at rest:** store in a `~/.config/lockstep/key` file, `0600`, relying on
+     **FileVault/LUKS** for at-rest protection. Storing the key in macOS Keychain +
+     libsecret (Linux) is **deferred** — two platform integrations for marginal
+     benefit when the disk is already encrypted.
+3. **No asymmetric crypto.** Per-machine keypairs / key exchange are the wrong tool
+   for two machines you own and trust — pure cost, and they reintroduce MITM risk.
+
+Net threat model: **TLS for transit · private rendezvous for access control ·
+symmetric AEAD (out-of-band-shared key, FileVault/LUKS at rest) for at-rest secrecy +
+authenticity · no asymmetric · no MITM surface.**
+
+Cost estimate: private rendezvous ≈ free; symmetric AEAD layer ≈ half a day;
+keychain/libsecret integration ≈ +1 day (deferred); asymmetric ≈ don't.
 
 ## Suggested next steps on the Mac
 
-1. Decide the A/B fork.
-2. `git init lockstep-git`; commit this file as `DESIGN.md`.
-3. Scaffold: CMake project with `lockstepd` (daemon), `lockstep` (CLI), and a Qt tray
+1. `git clone` on the Mac; set up the private rendezvous (private repo or secret gist)
+   and generate + copy the shared key out of band.
+2. Scaffold: CMake project with `lockstepd` (daemon), `lockstep` (CLI), and a Qt tray
    target; `.gitignore` (build dir, `*.xcodeproj`); the `pre-commit`/`pre-push` hook
-   client; a GitHub-rendezvous stub; the LaunchAgent plist + systemd user unit; an
-   `install` subcommand.
+   client; a GitHub-rendezvous stub (decision A: metadata JSON blob) with the
+   libsodium AEAD layer; the LaunchAgent plist + systemd user unit; an `install`
+   subcommand.
