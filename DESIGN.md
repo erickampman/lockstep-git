@@ -69,9 +69,8 @@ a tiny JSON blob).
 
 3. **CLI + UI — both thin clients of the daemon socket**
    - CLI: `lockstep status`, `lockstep why` (explain the last block), config.
-   - UI: **gtkmm** tray/menubar indicator — green/yellow/red per repo + a
-     desktop notification when the other machine goes dirty. (Tray specifics and
-     the macOS caveat under Technology decisions.)
+   - UI: **Qt `QSystemTrayIcon`** menubar/tray — green/yellow/red per repo + a
+     desktop notification when the other machine goes dirty.
 
 ## Technology decisions
 
@@ -81,24 +80,14 @@ a tiny JSON blob).
   this is Eric's own two machines / a personal repo). C considered but C++ wins for
   JSON/HTTP ergonomics. Swift is **not** viable as the shared core (no real Linux
   GUI story) — only a possible optional Mac-native front-end later, bolted on over
-  the C++ daemon.
-- **UI: gtkmm (GTK C++ bindings)** — one C++ UI codebase for both mac + linux.
-  Chosen over the Swift(mac)+DGL(linux) split specifically because it's a *public*
-  repo and two UI codebases isn't worth maintaining. **Supersedes the earlier Qt
-  decision** (Eric's call: prefers GTK/gtkmm). Because the UI is a thin client of the
-  daemon socket, the toolkit choice is isolated to the tray target and can be
-  revisited without touching the core.
-  - **Tray mechanism:** `GtkStatusIcon` is deprecated (GTK3) / removed (GTK4), so the
-    tray is a **StatusNotifierItem** via `libayatana-appindicator`. This is the
-    standard, well-supported path on Linux (GNOME needs an AppIndicator extension;
-    KDE/most others host SNI natively).
-  - **macOS caveat (eyes open):** GTK on macOS runs through the X-less quartz backend
-    and there is **no native menubar-tray integration** — the AppIndicator/SNI path
-    that works on Linux does not surface in the macOS system menubar. Options when we
-    get to the Mac tray: (a) ship the daemon + CLI + hooks on Mac now (this slice)
-    and treat the tray as Linux-first; (b) a tiny Mac-native `NSStatusItem`
-    front-end later (the "optional Mac-native front-end" noted above), still a thin
-    client of the daemon socket; or (c) revisit. Not blocking — the tray is deferred.
+  the C++ daemon. **Not needed** given Qt covers both platforms with one codebase.
+- **UI: Qt (`QSystemTrayIcon`)** — one C++ UI codebase for both mac + linux. Chosen
+  over the Swift(mac)+DGL(linux) split specifically because it's a *public* repo and
+  two UI codebases isn't worth maintaining. (`QSystemTrayIcon` works natively on both
+  the macOS menubar and Linux — no macOS tray caveat, unlike GTK's SNI path. Qt's
+  LGPL open-source build is fine here: personal, open, never sold.) Because the UI is
+  a thin client of the daemon socket, the toolkit choice is isolated to the tray
+  target and can be revisited without touching the core.
 - **Libraries:** libgit2 (or shell out to `git`) for repo ops; libcurl for the
   GitHub rendezvous; nlohmann/json (header-only) for state blobs.
 - **Build system: CMake as the single source of truth** (builds on both platforms).
@@ -235,7 +224,7 @@ The vertical spine builds and runs end-to-end on the Mac:
 Verified: daemon up → `verdict` clear/exit 0; SIGTERM → clean exit + socket removed;
 daemon down → clear error + exit 1; hook relays exit code.
 
-**Deferred deliberately (not yet built):** Qt→gtkmm tray, FSEvents/repo watching, the
+**Deferred deliberately (not yet built):** Qt tray, FSEvents/repo watching, the
 GitHub rendezvous (decision A metadata blob) + libsodium AEAD, LaunchAgent plist +
 systemd user unit, `pre-push` hook, `lockstep install` subcommand, `lockstep why`.
 
@@ -252,4 +241,4 @@ systemd user unit, `pre-push` hook, `lockstep install` subcommand, `lockstep why
    libsodium AEAD layer. Now `verdict` can actually block.
 3. `lockstep install` subcommand (writes the LaunchAgent plist / systemd user unit
    and installs the hooks) + the `pre-push` hook.
-4. gtkmm tray (Linux-first; see the macOS caveat under Technology decisions).
+4. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
