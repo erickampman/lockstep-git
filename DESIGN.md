@@ -1,7 +1,11 @@
 # lockstep-git — Design & Decision Handoff
 
-> Handoff doc for continuing this side project on macOS. Captures every decision
-> reached in the exploratory session so a fresh Claude (or me) can pick up cold.
+> Handoff doc for continuing this side project. Captures every decision reached in
+> the exploratory + build sessions so a fresh Claude (or me) can pick up cold.
+>
+> **Switching to the Linux machine?** Start with [LINUX_BRINGUP.md](LINUX_BRINGUP.md)
+> — the operational cold-start guide — then use this doc for the full rationale and
+> the slice-by-slice progress log.
 
 ## Problem
 
