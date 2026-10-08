@@ -326,8 +326,12 @@ fork()-in-a-thread hazard from shelling out to git.
   Daemon reloads on its next tick — no restart.
 - **`lockstep-tray`** (`src/tray/`, optional Qt target, guarded by `find_package(Qt6
   QUIET)` so the core still builds without Qt): polls `status` every 5s, shows a
-  green/yellow/red menubar dot (red = another machine has pending work in a repo this
-  machine watches; yellow = busy elsewhere / stale sync / key mismatch), notifies on
+  "¿?" mark tinted per side: the **¿ is this machine** (yellow = a watched repo is
+  behind its remote — pull before working — or unreadable), the **? is every other
+  machine, worst wins** (red = some machine has pending work in a repo this machine
+  watches; yellow = busy elsewhere / stale sync / key mismatch). The glyphs are
+  separated at runtime by connected shape, so new artwork needs no re-splitting
+  (it falls back to tinting the whole mark if it stops splitting cleanly). Notifies on
   worsening transitions, lists both machines' per-repo state, and offers "Add repo…"
   (folder picker) + "Remove repo" that shell out to `add`/`remove`. Enable with
   `-DCMAKE_PREFIX_PATH="$(brew --prefix qt)"`.

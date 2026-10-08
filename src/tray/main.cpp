@@ -1,8 +1,8 @@
 // lockstep-tray — a system-tray status indicator and repo manager.
 //
 // A thin GUI client of the daemon (same as the CLI): it polls `status` over the
-// socket every few seconds, colors a tray dot green/yellow/red, and notifies on
-// state changes. "Add repo…" and "Remove repo" shell out to `lockstep
+// socket every few seconds, tints the "¿?" mark green/yellow/red — the ¿ for
+// this machine, the ? for the other machine(s) — and notifies on state changes. "Add repo…" and "Remove repo" shell out to `lockstep
 // add`/`remove` — the config-mutation logic lives there, not here.
 
 #include <QApplication>
@@ -12,6 +12,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QIcon>
+#include <QImage>
 #include <QMenu>
 #include <QPainter>
 #include <QPixmap>
@@ -22,9 +23,11 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 
+#include <algorithm>
 #include <optional>
 #include <set>
 #include <string>
+#include <vector>
 
 #ifdef __APPLE__
 #include <objc/message.h>
@@ -52,6 +55,9 @@ QColor colorFor(Health h) {
     }
 }
 
+// The more severe of two healths (Unknown < Green < Yellow < Red).
+Health worse(Health a, Health b) { return std::max(a, b); }
+
 QString textFor(Health h) {
     switch (h) {
         case Health::Green:  return QStringLiteral("all clear");
@@ -67,37 +73,111 @@ const QPixmap& brandBase() {
     return pm;
 }
 
-// Plain colored dot — fallback when the brand image is unavailable.
-QIcon dotIcon(Health h) {
+// Plain colored dot — fallback when the brand image is unavailable. Left half
+// is this machine, right half the other machine(s), matching the mark.
+QIcon dotIcon(Health local, Health remote) {
     QPixmap pm(22, 22);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.setPen(Qt::NoPen);
-    p.setBrush(colorFor(h));
-    p.drawEllipse(3, 3, 16, 16);
+    p.setBrush(colorFor(local));
+    p.drawPie(3, 3, 16, 16, 90 * 16, 180 * 16);
+    p.setBrush(colorFor(remote));
+    p.drawPie(3, 3, 16, 16, 270 * 16, 180 * 16);
     p.end();
     return QIcon(pm);
 }
 
-// The brand mark tinted with the health color: the whole "¿?" turns
-// gray/green/amber/red, so status reads at a glance even at menubar size.
-// Falls back to the plain dot if the resource didn't load.
-QIcon trayIcon(Health h) {
+// The mark split into its two glyphs: the ¿ (left) and the ? (right). They
+// interlock — their bounding boxes overlap — so a vertical cut won't do; instead
+// each connected shape (the glyph bodies and their dots) goes to whichever side
+// its centroid falls on. Computed once from the full-resolution art.
+struct MarkHalves {
+    QImage left, right;
+    bool ok = false;
+};
+
+const MarkHalves& markHalves() {
+    static MarkHalves halves = [] {
+        MarkHalves h;
+        QImage img = brandBase().toImage().convertToFormat(QImage::Format_ARGB32);
+        if (img.isNull()) return h;
+        const int W = img.width(), H = img.height();
+        h.left = QImage(W, H, QImage::Format_ARGB32);
+        h.right = QImage(W, H, QImage::Format_ARGB32);
+        h.left.fill(Qt::transparent);
+        h.right.fill(Qt::transparent);
+
+        std::vector<char> seen(size_t(W) * H, 0);
+        std::vector<QPoint> shape, stack;
+        bool anyLeft = false, anyRight = false;
+        for (int y0 = 0; y0 < H; ++y0) {
+            for (int x0 = 0; x0 < W; ++x0) {
+                if (seen[size_t(y0) * W + x0] || qAlpha(img.pixel(x0, y0)) == 0) continue;
+                // Flood-fill one shape (4-connected, any non-transparent pixel).
+                shape.clear();
+                stack.assign(1, QPoint(x0, y0));
+                seen[size_t(y0) * W + x0] = 1;
+                long long sumX = 0;
+                while (!stack.empty()) {
+                    QPoint pt = stack.back();
+                    stack.pop_back();
+                    shape.push_back(pt);
+                    sumX += pt.x();
+                    const QPoint nbrs[] = {{pt.x() + 1, pt.y()}, {pt.x() - 1, pt.y()},
+                                           {pt.x(), pt.y() + 1}, {pt.x(), pt.y() - 1}};
+                    for (const QPoint& n : nbrs) {
+                        if (n.x() < 0 || n.y() < 0 || n.x() >= W || n.y() >= H) continue;
+                        char& s = seen[size_t(n.y()) * W + n.x()];
+                        if (s || qAlpha(img.pixel(n)) == 0) continue;
+                        s = 1;
+                        stack.push_back(n);
+                    }
+                }
+                bool isLeft = sumX < (long long)(W / 2) * (long long)shape.size();
+                QImage& dst = isLeft ? h.left : h.right;
+                (isLeft ? anyLeft : anyRight) = true;
+                for (const QPoint& pt : shape) dst.setPixel(pt, img.pixel(pt));
+            }
+        }
+        h.ok = anyLeft && anyRight;
+        return h;
+    }();
+    return halves;
+}
+
+// `art` scaled to S×S with every opaque pixel recolored to `c`, keeping the
+// shape (alpha).
+QPixmap tinted(const QImage& art, const QColor& c, int S) {
+    QPixmap pm = QPixmap::fromImage(
+        art.scaled(S, S, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    QPainter p(&pm);
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(pm.rect(), c);
+    p.end();
+    return pm;
+}
+
+// The brand mark tinted by health: the ¿ shows this machine, the ? the other
+// machine(s), so each side reads at a glance even at menubar size. If the art
+// doesn't split into two glyphs, the whole mark takes the worse of the two;
+// if it didn't load at all, a split dot stands in.
+QIcon trayIcon(Health local, Health remote) {
     const QPixmap& base = brandBase();
-    if (base.isNull()) return dotIcon(h);
+    if (base.isNull()) return dotIcon(local, remote);
 
     const int S = 44;  // rendered large; the menubar downscales it crisply
-    QPixmap art = base.scaled(S, S, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    const MarkHalves& halves = markHalves();
+    if (!halves.ok) return QIcon(tinted(base.toImage(), colorFor(worse(local, remote)), S));
 
-    QPixmap canvas(art.size());
+    QPixmap left = tinted(halves.left, colorFor(local), S);
+    QPixmap right = tinted(halves.right, colorFor(remote), S);
+    QPixmap canvas(left.size());
     canvas.fill(Qt::transparent);
     QPainter p(&canvas);
-    p.setRenderHint(QPainter::SmoothPixmapTransform);
-    p.drawPixmap(0, 0, art);
-    // Recolor every opaque pixel to the status color, keeping the shape (alpha).
-    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    p.fillRect(canvas.rect(), colorFor(h));
+    p.drawPixmap(0, 0, left);
+    p.drawPixmap(0, 0, right);
     p.end();
     return QIcon(canvas);
 }
@@ -129,6 +209,12 @@ QString describeRepo(const json& r) {
     return s;
 }
 
+// True when a local repo's branch is behind its upstream — another machine
+// pushed and this checkout hasn't pulled (as of the last fetch).
+bool behindRemote(const json& r) {
+    return r.value("has_upstream", false) && r.value("behind", 0) > 0;
+}
+
 QString mark(bool clean) {
     return clean ? QString::fromUtf8("✓ ") : QString::fromUtf8("● ");  // ✓ / ●
 }
@@ -156,6 +242,12 @@ struct Tray {
     void addInfo(const QString& text) {
         QAction* a = menu.addAction(text);
         a->setEnabled(false);
+    }
+
+    // A submenu titled `title` listing `lines` as read-only rows.
+    void addDetails(QMenu* parent, const QString& title, const QStringList& lines) {
+        QMenu* sub = parent->addMenu(title);
+        for (const auto& line : lines) sub->addAction(line)->setEnabled(false);
     }
 
     void runCli(const QStringList& args) {
@@ -200,7 +292,7 @@ struct Tray {
         menu.clear();
 
         if (!reply) {
-            icon.setIcon(trayIcon(Health::Unknown));
+            icon.setIcon(trayIcon(Health::Unknown, Health::Unknown));
             icon.setToolTip(QStringLiteral("lockstep — daemon not running"));
             addInfo(QStringLiteral("lockstep — daemon not running"));
             menu.addSeparator();
@@ -211,12 +303,28 @@ struct Tray {
         }
         const json& st = *reply;
 
-        // Which repos do we watch locally (by basename)?
+        // Which repos do we watch locally (by basename)? And this machine's own
+        // health: yellow when a repo is behind its remote (another machine pushed;
+        // pull before working here) or can't be read.
         std::set<std::string> localNames;
+        bool localYellow = false;
+        QString localDetail;
         for (const auto& r : st.value("repos", json::array())) {
             std::string path = r.value("path", "");
             if (!path.empty()) localNames.insert(lockstep::repo_name(path));
+            QString name = QString::fromStdString(lockstep::repo_name(path));
+            if (r.contains("error")) {
+                localYellow = true;
+                if (localDetail.isEmpty())
+                    localDetail = name + " — " + QString::fromStdString(r.value("error", "?"));
+            } else if (behindRemote(r)) {
+                localYellow = true;
+                if (localDetail.isEmpty())
+                    localDetail = name + " is " + describeRepo(r).section(", ", -1) +
+                                  " — pull before working";
+            }
         }
+        Health local = localYellow ? Health::Yellow : Health::Green;
 
         // Compute health from the cached cross-machine state.
         bool red = false, yellow = false;
@@ -240,19 +348,42 @@ struct Tray {
                 }
             }
         }
-        Health h = red ? Health::Red : (yellow ? Health::Yellow : Health::Green);
+        Health remote = red ? Health::Red : (yellow ? Health::Yellow : Health::Green);
+        Health h = worse(local, remote);
+        if (detail.isEmpty() && local == h) detail = localDetail;
 
         // --- Build the menu ---
-        addInfo(QStringLiteral("lockstep — ") + textFor(h));
+        // The menu is drawn by the desktop shell (GNOME's AppIndicator extension,
+        // the macOS menubar), not by Qt, so row height and font can't be styled
+        // from here. Keep it short instead: only repos that need attention get a
+        // row; clean ones fold into a submenu, and each other machine is one row
+        // with its repos in a submenu. Rows grow with problems, not with repos.
+        // One side's news is enough for the headline; when both agree, keep it short.
+        QString headline = local == remote
+                               ? textFor(h)
+                               : QStringLiteral("this machine: ") + textFor(local) +
+                                     QStringLiteral(", others: ") + textFor(remote);
+        addInfo(QStringLiteral("lockstep — ") + headline);
         menu.addSeparator();
 
         addInfo(QStringLiteral("This machine"));
+        QStringList cleanHere;
         for (const auto& r : st.value("repos", json::array())) {
             std::string path = r.value("path", "");
             QString name = QString::fromStdString(lockstep::repo_name(path));
-            addInfo(QStringLiteral("  ") + mark(r.value("clean", true)) + name +
-                    QStringLiteral(" — ") + describeRepo(r));
+            bool behind = behindRemote(r);
+            bool fine = r.value("clean", true) && !behind && !r.contains("error");
+            QString line = name + QStringLiteral(" — ") + describeRepo(r) +
+                           (behind ? QStringLiteral(" — pull before working") : QString());
+            if (fine)
+                cleanHere << mark(true) + line;
+            else
+                addInfo(QStringLiteral("  ") + mark(false) + line);
         }
+        if (!cleanHere.isEmpty())
+            addDetails(&menu, QStringLiteral("  ") + mark(true) +
+                                  QStringLiteral("%1 clean").arg(cleanHere.size()),
+                       cleanHere);
 
         menu.addSeparator();
         auto others = st.value("others", json::array());
@@ -267,13 +398,24 @@ struct Tray {
             addInfo(QStringLiteral("Other machines") +
                     (when.isEmpty() ? QString() : QStringLiteral(" (synced ") + when + ")"));
             for (const auto& m : others) {
-                addInfo(QStringLiteral("  ") + QString::fromStdString(m.value("machine", "?")) +
-                        QStringLiteral(" (as of ") + QString::fromStdString(m.value("as_of", "?")) + ")");
+                QStringList all, pending;
                 for (const auto& r : m.value("repos", json::array())) {
-                    addInfo(QStringLiteral("    ") + mark(r.value("clean", true)) +
-                            QString::fromStdString(r.value("name", "?")) +
-                            QStringLiteral(" — ") + describeRepo(r));
+                    bool clean = r.value("clean", true);
+                    QString line = QString::fromStdString(r.value("name", "?")) +
+                                   QStringLiteral(" — ") + describeRepo(r);
+                    all << mark(clean) + line;
+                    if (!clean) pending << line;
                 }
+                QString summary = pending.isEmpty()
+                                      ? QStringLiteral("all clear")
+                                      : QStringLiteral("%1 with pending work").arg(pending.size());
+                addDetails(&menu,
+                           QStringLiteral("  ") + mark(pending.isEmpty()) +
+                               QString::fromStdString(m.value("machine", "?")) +
+                               QStringLiteral(" — ") + summary + QStringLiteral(" (as of ") +
+                               QString::fromStdString(m.value("as_of", "?")) + ")",
+                           all);
+                for (const auto& line : pending) addInfo(QStringLiteral("      ") + mark(false) + line);
             }
         }
 
@@ -290,8 +432,8 @@ struct Tray {
         menu.addAction(QStringLiteral("Refresh now"), [this] { refresh(); });
         menu.addAction(QStringLiteral("Quit"), [] { qApp->quit(); });
 
-        icon.setIcon(trayIcon(h));
-        icon.setToolTip(QStringLiteral("lockstep — ") + textFor(h));
+        icon.setIcon(trayIcon(local, remote));
+        icon.setToolTip(QStringLiteral("lockstep — ") + headline);
         maybeNotify(h, detail.isEmpty() ? textFor(h) : detail);
         last = h;
     }
@@ -310,7 +452,7 @@ int main(int argc, char** argv) {
     }
 
     static Tray tray;  // constructed after QApplication; lives for the app's life
-    tray.icon.setIcon(trayIcon(Health::Unknown));
+    tray.icon.setIcon(trayIcon(Health::Unknown, Health::Unknown));
     tray.icon.setContextMenu(&tray.menu);
     tray.icon.setToolTip(QStringLiteral("lockstep"));
     tray.icon.show();
