@@ -80,30 +80,24 @@ QIcon dotIcon(Health h) {
     return QIcon(pm);
 }
 
-// The brand mark with a status-colored dot badged into the bottom-right corner
-// (white-ringed for contrast against the red artwork). Falls back to the plain
-// dot if the resource didn't load.
+// The brand mark tinted with the health color: the whole "¿?" turns
+// gray/green/amber/red, so status reads at a glance even at menubar size.
+// Falls back to the plain dot if the resource didn't load.
 QIcon trayIcon(Health h) {
     const QPixmap& base = brandBase();
     if (base.isNull()) return dotIcon(h);
 
     const int S = 44;  // rendered large; the menubar downscales it crisply
-    QPixmap canvas(S, S);
+    QPixmap art = base.scaled(S, S, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+
+    QPixmap canvas(art.size());
     canvas.fill(Qt::transparent);
     QPainter p(&canvas);
-    p.setRenderHint(QPainter::Antialiasing);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
-
-    QPixmap art = base.scaled(S, S, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    p.drawPixmap((S - art.width()) / 2, (S - art.height()) / 2, art);
-
-    const qreal rr = S * 0.26;                 // badge radius
-    const QPointF c(S - rr - 1.0, S - rr - 1.0);  // bottom-right
-    p.setPen(Qt::NoPen);
-    p.setBrush(Qt::white);
-    p.drawEllipse(c, rr, rr);                  // halo
-    p.setBrush(colorFor(h));
-    p.drawEllipse(c, rr * 0.72, rr * 0.72);    // status dot
+    p.drawPixmap(0, 0, art);
+    // Recolor every opaque pixel to the status color, keeping the shape (alpha).
+    p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    p.fillRect(canvas.rect(), colorFor(h));
     p.end();
     return QIcon(canvas);
 }
