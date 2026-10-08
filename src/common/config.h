@@ -15,6 +15,7 @@ struct Config {
     std::string rendezvous_dir;      // file-backend rendezvous dir (tests/interim)
     std::string rendezvous_repo;     // git clone of the private rendezvous repo
     std::string key_path;            // shared AEAD key file (tilde-expanded)
+    int tick_seconds = 0;            // background publish/fetch interval; 0 = default
 };
 
 // Logical name of a repo path — its basename. This is the key used to match the

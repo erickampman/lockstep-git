@@ -297,25 +297,39 @@ to `~/Dev-Common/lockstep-rendezvous` (mac). Set `"rendezvous_repo"` to that pat
 run `lockstep keygen`, then copy `~/.config/lockstep/key` to the Linux box and clone
 the same private repo there. See "Current config" below.
 
-**Known tradeoff — per-commit latency.** With no tick loop yet, `verdict` does a live
-`git fetch`/`push` to the rendezvous on each call, so a `pre-commit` hook pays a
-network round-trip to GitHub per commit. Correct but slow-ish, and offline it falls
-back to stale-but-usable local state. The **background tick loop** (next) fixes this:
-the daemon publishes/fetches periodically and `verdict` reads the cache.
+**Slice 4 — background tick loop — DONE (2026-10-08).**
+`lockstepd`'s main loop is now a single-threaded `poll()` loop: it serves the socket
+and, on a timer, runs a **tick** that publishes this machine's state and fetches +
+decrypts the other machines'. The result is cached (`RendezvousCache`), and
+`verdict`/`status` read that cache — **no network on the commit path**, so the hook is
+a fast local round-trip. Single-threaded by design: no mutex, and no
+fork()-in-a-thread hazard from shelling out to git.
+- Interval: `tick_seconds` in config (env `LOCKSTEP_TICK_SECONDS`), default 30, floored
+  at 5, capped at 3600. A tick also runs once at startup to warm the cache.
+- Fail-open preserved: no rendezvous/key → cache `configured=false` → clear with a
+  note. A transient fetch error **keeps the last-known state** (stale beats silently
+  unprotected) and adds a "sync issue … (showing last known state)" note; a config
+  problem clears it. Decrypt failures are warned once per machine per run (no per-tick
+  log spam).
+- New tradeoff (much smaller): cross-machine state can be up to one tick-interval
+  stale, which the existing "as of Xm ago" text already surfaces.
+- Verified (file backend, 2s tick): empty → clear; other machine goes dirty → verdict
+  stays clear until the next tick, then flips to blocked on its own; SIGTERM still
+  exits cleanly through the poll loop.
 
-**Deferred deliberately (not yet built):** a **background tick loop** (periodic
-publish/fetch; removes per-commit network latency); Qt tray; FSEvents/fsmonitor push
-watching; LaunchAgent plist + systemd user unit; `pre-push` hook; `lockstep install`
-subcommand; `lockstep why`.
+**Deferred deliberately (not yet built):** Qt tray; FSEvents/fsmonitor push watching
+(the tick is currently a plain timer — good enough, but event-driven would cut the
+staleness window); LaunchAgent plist + systemd user unit; `lockstep install`
+subcommand; `pre-push` hook; `lockstep why`; `status` showing the cached other-machine
+state (the cache now has it — a cheap, high-value follow-up toward the UI).
 
 ## Suggested next steps on the Mac
 
 1. ~~**Repo watching + real verdict.**~~ DONE (slice 2).
 2. ~~**Rendezvous crypto/blob + blocking verdict.**~~ DONE (slice 3 core, offline).
 3. ~~**GitHub-private-repo backend.**~~ DONE (slice 3 GitHub backend).
-4. **Background tick loop** in the daemon: periodically publish + fetch (FSEvents on
-   mac, fsmonitor/poll on linux) so state is fresh without waiting for a verdict —
-   removes the per-commit network latency noted above.
+4. ~~**Background tick loop.**~~ DONE (slice 4) — timer-based; FSEvents/fsmonitor
+   event-driven watching is a later refinement to cut the staleness window.
 5. `lockstep install` subcommand (LaunchAgent plist / systemd user unit + hooks) +
    the `pre-push` hook.
 6. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).

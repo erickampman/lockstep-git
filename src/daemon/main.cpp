@@ -1,9 +1,11 @@
 // lockstepd — the per-machine daemon.
 //
-// This first slice is intentionally thin: it opens the Unix socket and answers
-// verdict/status/ping requests with a hardcoded "clear" verdict. The real
-// machinery (repo watching, GitHub rendezvous, the other machine's cached
-// state) hangs off this same socket surface and lands in later slices.
+// A single-threaded poll() loop does two things: serve verdict/status/ping over
+// the Unix socket, and on a timer run a background "tick" that publishes this
+// machine's state to the rendezvous and fetches + decrypts the other machines'.
+// The tick's result is cached, so verdict/status answer from memory with no
+// network — commits don't pay a GitHub round-trip. Single-threaded on purpose:
+// no mutex, and no fork()-in-a-thread hazard from shelling out to git.
 
 #include <csignal>
 #include <cstdio>
@@ -14,8 +16,11 @@
 #include <ctime>
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <string>
+#include <vector>
 
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -197,71 +202,139 @@ json pin_warnings(const lockstep::Config& cfg, const std::string& repo) {
     return warnings;
 }
 
-// Decide whether committing here is clear, given the other machine(s)' state.
-// Policy: fail OPEN (clear, with a note) when the rendezvous/key isn't set up or
-// can't be read — a dev tool must not block real work over its own plumbing.
-// Block only on a definite "other machine has pending work" signal. `repo_filter`
-// (optional) restricts the check to one repo name (the committing repo).
+// Cached result of the last background tick, so verdict/status answer from
+// memory with no network. Single-threaded daemon, so no locking is needed.
+struct RendezvousCache {
+    std::vector<lockstep::MachineBlob> others;  // other machines' decrypted state
+    int undecryptable = 0;                      // blobs we couldn't decrypt (key mismatch?)
+    bool configured = false;                    // rendezvous + key both present
+    bool ever = false;                          // at least one tick has run
+    std::string status;                         // "" on clean success; else a reason
+    int64_t last_ok = 0;                        // unix secs of last successful fetch
+};
+RendezvousCache g_cache;
+int g_tick_seconds = 30;
+
+int resolve_tick_seconds(const lockstep::Config& cfg) {
+    int s = cfg.tick_seconds;
+    if (std::string e = env_or_empty("LOCKSTEP_TICK_SECONDS"); !e.empty())
+        s = std::atoi(e.c_str());
+    if (s <= 0) s = 30;      // default
+    if (s < 5) s = 5;        // floor: don't hammer the remote
+    if (s > 3600) s = 3600;  // ceiling
+    return s;
+}
+
+// Refresh g_cache from the rendezvous: publish our state, fetch + decrypt the
+// others. On a config problem (no rendezvous/key) we clear the cached others —
+// there's genuinely nothing to compare against. On a transient fetch error we
+// KEEP the last-known others (stale state beats silently dropping the guard);
+// their age shows through the per-machine timestamps.
+void do_tick() {
+    lockstep::Config cfg = lockstep::load_config();
+    g_tick_seconds = resolve_tick_seconds(cfg);
+    g_cache.ever = true;
+
+    auto rv = make_rendezvous(cfg);
+    if (!rv) {
+        g_cache.configured = false;
+        g_cache.status = "rendezvous not configured";
+        g_cache.others.clear();
+        g_cache.undecryptable = 0;
+        return;
+    }
+    std::string kerr;
+    auto key = lockstep::crypto::load_key(resolve_key_path(cfg), &kerr);
+    if (!key) {
+        g_cache.configured = false;
+        g_cache.status = "no shared key: " + kerr;
+        g_cache.others.clear();
+        g_cache.undecryptable = 0;
+        return;
+    }
+    g_cache.configured = true;
+
+    publish_self(cfg, *key, *rv);
+
+    std::string ferr;
+    auto others = rv->fetch_others(lockstep::machine_id(cfg), &ferr);
+    if (!others) {
+        g_cache.status = "rendezvous unreadable: " + ferr;  // keep stale others
+        return;
+    }
+
+    // Warn once per machine per run on a decrypt failure, so a persistent key
+    // mismatch doesn't spam the log every tick.
+    static std::set<std::string> warned_decrypt;
+    std::vector<lockstep::MachineBlob> fresh;
+    int undec = 0;
+    for (auto& [machine, enc] : *others) {
+        auto plain = lockstep::crypto::decrypt(*key, enc);
+        if (!plain) {
+            ++undec;
+            if (warned_decrypt.insert(machine).second)
+                log_line("warn", "could not decrypt blob from " + machine +
+                                     " (wrong key or tampered)");
+            continue;
+        }
+        warned_decrypt.erase(machine);
+        auto parsed = nlohmann::json::parse(*plain, nullptr, false);
+        if (parsed.is_discarded()) continue;
+        auto b = lockstep::blob_from_json(parsed);
+        if (!b) continue;
+        fresh.push_back(std::move(*b));
+    }
+    g_cache.others = std::move(fresh);
+    g_cache.undecryptable = undec;
+    g_cache.status = "";
+    g_cache.last_ok = static_cast<int64_t>(std::time(nullptr));
+}
+
+// Decide whether committing here is clear, reading the cached other-machine
+// state (no network — the tick keeps it fresh). Policy: fail OPEN (clear, with a
+// note) when the rendezvous/key isn't set up — a dev tool must not block real
+// work over its own plumbing. Block only on a definite "other machine has
+// pending work" signal. `repo_filter` (optional) restricts the check to one repo
+// name (the committing repo).
 //
 // Dependencies of the committing repo never block; they produce `warnings`
 // (pending work on a dependency elsewhere, or local submodule pin drift), which
 // the hook turns into a "commit anyway?" prompt.
 json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter) {
-    std::string key_path = resolve_key_path(cfg);
-
+    // Pin drift is local git state — compute it fresh each call, not on the tick.
     json warnings = repo_filter.empty() ? json::array() : pin_warnings(cfg, repo_filter);
     std::vector<std::string> deps;
     if (!repo_filter.empty()) deps = lockstep::dependencies(cfg, repo_filter);
     auto is_dep = [&](const std::string& n) {
         return std::find(deps.begin(), deps.end(), n) != deps.end();
     };
-    // Every reply carries the warnings gathered so far.
     auto reply = [&](bool clear, const std::string& msg) {
         return json{{"ok", true}, {"clear", clear}, {"message", msg},
                     {"warnings", warnings}};
     };
 
-    auto rv = make_rendezvous(cfg);
-    if (!rv) return reply(true, "clear (rendezvous not configured)");
-    std::string kerr;
-    auto key = lockstep::crypto::load_key(key_path, &kerr);
-    if (!key) return reply(true, "clear (no shared key: " + kerr + ")");
-
-    publish_self(cfg, *key, *rv);  // keep our slot fresh
-
-    std::string ferr;
-    auto others = rv->fetch_others(lockstep::machine_id(cfg), &ferr);
-    if (!others) return reply(true, "clear (rendezvous unreadable: " + ferr + ")");
+    if (!g_cache.configured) {
+        std::string why = g_cache.status.empty() ? "rendezvous not configured"
+                                                 : g_cache.status;
+        return reply(true, "clear (" + why + ")");
+    }
 
     json blockers = json::array();
     json notes = json::array();
-    int undecryptable = 0;
-    for (const auto& [machine, enc] : *others) {
-        auto plain = lockstep::crypto::decrypt(*key, enc);
-        if (!plain) {
-            ++undecryptable;
-            log_line("warn", "could not decrypt blob from " + machine +
-                                 " (wrong key or tampered)");
-            continue;
-        }
-        auto parsed = nlohmann::json::parse(*plain, nullptr, false);
-        if (parsed.is_discarded()) continue;
-        auto b = lockstep::blob_from_json(parsed);
-        if (!b) continue;
-
+    for (const auto& b : g_cache.others) {
         std::vector<std::string> unseen = deps;  // deps this machine doesn't report
-        for (const auto& r : b->repos) {
+        for (const auto& r : b.repos) {
             bool dep = is_dep(r.name);
             if (auto u = std::find(unseen.begin(), unseen.end(), r.name); u != unseen.end())
                 unseen.erase(u);
             if (!dep && !repo_filter.empty() && r.name != repo_filter) continue;
             if (r.clean) continue;
-            json item = {{"machine", b->machine}, {"repo", r.name}, {"branch", r.branch},
-                         {"detail", pending_detail(r)}, {"as_of", human_age(b->timestamp)}};
+            json item = {{"machine", b.machine}, {"repo", r.name}, {"branch", r.branch},
+                         {"detail", pending_detail(r)}, {"as_of", human_age(b.timestamp)}};
             if (dep) {
                 item["kind"] = "dependency";
-                item["message"] = b->machine + " has " + pending_detail(r) + " on " +
-                                  r.name + " (" + human_age(b->timestamp) + "), which " +
+                item["message"] = b.machine + " has " + pending_detail(r) + " on " +
+                                  r.name + " (" + human_age(b.timestamp) + "), which " +
                                   repo_filter + " depends on";
                 warnings.push_back(std::move(item));
             } else {
@@ -269,7 +342,7 @@ json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter)
             }
         }
         for (const auto& u : unseen)
-            notes.push_back(u + " isn't watched on " + b->machine +
+            notes.push_back(u + " isn't watched on " + b.machine +
                             ", so its state there is unknown");
     }
 
@@ -278,8 +351,8 @@ json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter)
         std::string msg = warnings.empty()
                               ? "clear (other machine has no pending work)"
                               : "not blocked, but:";
-        if (undecryptable > 0)
-            msg = "clear, BUT could not decrypt " + std::to_string(undecryptable) +
+        if (g_cache.undecryptable > 0)
+            msg = "clear, BUT could not decrypt " + std::to_string(g_cache.undecryptable) +
                   " blob(s) — key mismatch between machines? guard is not protecting"
                   " those.";
         out = reply(true, msg);
@@ -293,6 +366,9 @@ json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter)
         out = reply(false, msg);
         out["blockers"] = std::move(blockers);
     }
+    // Surface a degraded sync (stale data) without blocking.
+    if (!g_cache.status.empty())
+        notes.push_back("sync issue: " + g_cache.status + " (showing last known state)");
     if (!notes.empty()) out["notes"] = std::move(notes);
     return out;
 }
@@ -357,15 +433,37 @@ int main() {
     }
     log_line("info", "lockstepd listening on " + path);
 
+    do_tick();  // warm the cache before serving the first request
+    log_line("info", "background sync every " + std::to_string(g_tick_seconds) + "s");
+    int64_t next_tick = static_cast<int64_t>(std::time(nullptr)) + g_tick_seconds;
+
     while (!g_stop) {
-        int client_fd = ::accept(listen_fd, nullptr, nullptr);
-        if (client_fd < 0) {
+        int64_t now = static_cast<int64_t>(std::time(nullptr));
+        int timeout_ms = next_tick <= now
+                             ? 0
+                             : static_cast<int>((next_tick - now) * 1000);
+        struct pollfd pfd{listen_fd, POLLIN, 0};
+        int n = ::poll(&pfd, 1, timeout_ms);
+        if (g_stop) break;
+        if (n < 0) {
             if (errno == EINTR) continue;  // interrupted by SIGTERM/SIGINT
-            log_line("warn", std::string("accept: ") + std::strerror(errno));
+            log_line("warn", std::string("poll: ") + std::strerror(errno));
             continue;
         }
-        serve_one(client_fd);
-        ::close(client_fd);
+        if (n > 0 && (pfd.revents & POLLIN)) {
+            int client_fd = ::accept(listen_fd, nullptr, nullptr);
+            if (client_fd >= 0) {
+                serve_one(client_fd);
+                ::close(client_fd);
+            } else if (errno != EINTR) {
+                log_line("warn", std::string("accept: ") + std::strerror(errno));
+            }
+        }
+        // Due for a tick? (poll timed out, or a request arrived past the deadline.)
+        if (static_cast<int64_t>(std::time(nullptr)) >= next_tick) {
+            do_tick();
+            next_tick = static_cast<int64_t>(std::time(nullptr)) + g_tick_seconds;
+        }
     }
 
     log_line("info", "shutting down");

@@ -84,6 +84,9 @@ Config load_config(std::string* error) {
     if (auto it = json.find("key_path"); it != json.end() && it->is_string()) {
         cfg.key_path = expand_tilde(it->get<std::string>());
     }
+    if (auto it = json.find("tick_seconds"); it != json.end() && it->is_number_integer()) {
+        cfg.tick_seconds = it->get<int>();
+    }
     return cfg;
 }
 
