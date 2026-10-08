@@ -1,21 +1,26 @@
 #!/bin/sh
-# lockstep-git pre-commit hook — the funnel.
+# lockstep-git hook — the funnel. Installed as both pre-commit and pre-push.
 #
-# Asks the local daemon "am I clear to commit?" and blocks (non-zero exit) if
-# the other machine has pending work. Thin by design: all the logic lives in
-# the daemon; this just relays the verdict.
+# Asks the local daemon "am I clear?" and blocks (non-zero exit) if the other
+# machine has pending work. Thin by design: all the logic lives in the daemon;
+# this just relays the verdict.
 #
 # Warnings (a dependency like uw-core has pending work on the other machine, or
 # a submodule pin has drifted) don't block on their own: at a terminal you're
-# asked "Commit anyway? [y/N]"; with no terminal (IDE, GUI client, script) the
-# warning is printed and the commit proceeds.
+# asked "Commit anyway? [y/N]" (or "Push anyway?"); with no terminal (IDE, GUI
+# client, script) the warning is printed and the commit/push proceeds.
 #
-# Install: symlink or copy into a repo's .git/hooks/pre-commit (the `lockstep
-# install` subcommand will do this in a later slice).
+# Install: `lockstep install` writes this into every watched repo as pre-commit
+# and pre-push (it's compiled into the CLI, so rebuild after editing it).
 #
 # Escape hatch: set LOCKSTEP_SKIP=1 to bypass (same spirit as `git commit -n`).
 
 [ "${LOCKSTEP_SKIP:-0}" = "1" ] && exit 0
+
+case $(basename "$0") in
+    pre-push) action=push;   Action=Push ;;
+    *)        action=commit; Action=Commit ;;
+esac
 
 # Find the CLI: prefer one on PATH, else a conventional install location.
 if command -v lockstep >/dev/null 2>&1; then
@@ -37,12 +42,12 @@ case $? in
         # stderr must be a tty and /dev/tty openable (git doesn't give hooks
         # the terminal on stdin).
         if [ -t 2 ] && (: </dev/tty) 2>/dev/null; then
-            printf 'Commit anyway? [y/N] ' >&2
+            printf '%s anyway? [y/N] ' "$Action" >&2
             read -r answer </dev/tty
             case $answer in
                 y|Y|yes|Yes|YES) exit 0 ;;
             esac
-            echo "lockstep: commit aborted" >&2
+            echo "lockstep: $action aborted" >&2
             exit 1
         fi
         exit 0

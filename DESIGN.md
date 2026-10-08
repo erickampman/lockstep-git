@@ -330,8 +330,20 @@ state (the cache now has it — a cheap, high-value follow-up toward the UI).
 3. ~~**GitHub-private-repo backend.**~~ DONE (slice 3 GitHub backend).
 4. ~~**Background tick loop.**~~ DONE (slice 4) — timer-based; FSEvents/fsmonitor
    event-driven watching is a later refinement to cut the staleness window.
-5. `lockstep install` subcommand (LaunchAgent plist / systemd user unit + hooks) +
-   the `pre-push` hook.
+5. ~~**`lockstep install`** + `pre-push` hook.~~ DONE on Linux (2026-10-08); the
+   LaunchAgent half is written but **untested on the Mac**. Idempotent:
+   - links `~/.local/bin/{lockstep,lockstepd}` → the build output (rebuild + restart
+     the service picks up new code);
+   - writes the hook into every watched repo as `pre-commit` **and** `pre-push` (one
+     script, wording keyed off `$0`; compiled into the CLI from `hooks/pre-commit`).
+     Honors `core.hooksPath`; never overwrites a hook that isn't lockstep's;
+   - writes + enables `~/.config/systemd/user/lockstep.service` /
+     `~/Library/LaunchAgents/com.ericlkampman.lockstep.plist` (PATH includes
+     Homebrew) and waits for the daemon to answer. Refuses if a hand-started
+     daemon is running (two daemons would fight over the socket).
+   - `lockstep uninstall` reverses it all, keeping config + key.
+   Pre-push runs the same verdict as pre-commit (blocks on the other machine's
+   pending work on this repo, prompts on dependency warnings).
 6. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
 
 ## Dependency-aware watching (Eric, 2026-10-08) — BUILT

@@ -4,6 +4,7 @@
 //   lockstep verdict  "am I clear to commit?" — exit 0 clear, 1 blocked
 //                     (--warn-exit: exit 3 when clear but with warnings)
 //   lockstep ping     liveness check
+//   lockstep install  links + hooks + login service (see install.h)
 //
 // Everything here is IPC + formatting; the daemon holds the state.
 
@@ -18,6 +19,7 @@
 
 #include "config.h"
 #include "crypto.h"
+#include "install.h"
 #include "ipc.h"
 #include "paths.h"
 #include "subprocess.h"
@@ -33,7 +35,11 @@ int usage(const char* argv0) {
                  "  verdict   exit 0 if clear to commit, 1 if blocked\n"
                  "            --warn-exit: exit 3 if clear but with warnings\n"
                  "  ping      check the daemon is running\n"
-                 "  keygen    generate the shared rendezvous key (once per pair)\n",
+                 "  keygen    generate the shared rendezvous key (once per pair)\n"
+                 "  install   link binaries into ~/.local/bin, install hooks in watched\n"
+                 "            repos, and run the daemon at login (re-run after config\n"
+                 "            changes)\n"
+                 "  uninstall undo install (keeps config and key)\n",
                  argv0);
     return 2;
 }
@@ -240,6 +246,8 @@ int main(int argc, char** argv) {
     if (cmd == "verdict")
         return cmd_verdict(argc > 2 && std::strcmp(argv[2], "--warn-exit") == 0);
     if (cmd == "keygen") return cmd_keygen();
+    if (cmd == "install") return lockstep::cli::cmd_install();
+    if (cmd == "uninstall") return lockstep::cli::cmd_uninstall();
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { usage(argv[0]); return 0; }
 
     std::fprintf(stderr, "lockstep: unknown command '%s'\n", cmd.c_str());

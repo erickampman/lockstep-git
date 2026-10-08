@@ -97,12 +97,14 @@ cmake --build build
    Do NOT run `lockstep keygen` on Linux — that would make a *different* key and the
    two machines couldn't read each other's blobs. Reuse the Mac's key.
 
-4. **Run the daemon and install the hook:**
+4. **Install** (links into `~/.local/bin`, hooks into every watched repo, systemd
+   user service started and enabled at login):
    ```bash
-   ./build/bin/lockstepd &            # or a systemd --user unit (see DESIGN.md)
-   ./build/bin/lockstep status        # sanity check: lists watched repos
-   cp hooks/pre-commit ~/dev/some-project/.git/hooks/pre-commit
+   ./build/bin/lockstep install       # re-run after adding repos to the config
+   lockstep status                    # sanity check: lists watched repos
    ```
+   After a rebuild: `systemctl --user restart lockstep`. Logs:
+   `journalctl --user -u lockstep`.
 
 ## Verify it's talking to the Mac
 
@@ -135,10 +137,8 @@ stale-but-usable local state and still returns a verdict. The planned tick loop 
 the daemon sync in the background so `verdict` reads a cache. If per-commit latency is
 annoying on Linux, that slice is the fix — see DESIGN.md "next steps".
 
-## Linux autostart (deferred, sketch)
+## Linux autostart
 
-systemd `--user` unit at `~/.config/systemd/user/lockstep.service`, then
-`systemctl --user enable --now lockstep`. The daemon is a plain foreground process
-(logs to stdout/stderr, clean SIGTERM), so systemd just supervises it — no
-platform-specific code. Not built yet; the `lockstep install` subcommand will write
-this unit eventually.
+`lockstep install` writes `~/.config/systemd/user/lockstep.service` and enables it.
+The daemon is a plain foreground process (logs to stdout/stderr, clean SIGTERM), so
+systemd just supervises it — no platform-specific code in the daemon.
