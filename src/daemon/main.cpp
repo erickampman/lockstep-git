@@ -388,10 +388,37 @@ json handle(const json& req) {
     }
     if (cmd == lockstep::ipc::kCmdStatus) {
         LocalScan scan = scan_local();
+
+        // The other machines' state, as of the last background tick (from cache).
+        json others = json::array();
+        for (const auto& b : g_cache.others) {
+            json repos = json::array();
+            for (const auto& r : b.repos) {
+                repos.push_back({{"name", r.name},
+                                 {"branch", r.branch},
+                                 {"clean", r.clean},
+                                 {"dirty", r.dirty},
+                                 {"has_upstream", r.has_upstream},
+                                 {"ahead", r.ahead},
+                                 {"behind", r.behind},
+                                 {"readable", r.readable}});
+            }
+            others.push_back({{"machine", b.machine},
+                              {"as_of", human_age(b.timestamp)},
+                              {"repos", std::move(repos)}});
+        }
+        json sync = {{"configured", g_cache.configured},
+                     {"ever", g_cache.ever},
+                     {"status", g_cache.status},
+                     {"undecryptable", g_cache.undecryptable}};
+        if (g_cache.last_ok > 0) sync["last_sync"] = human_age(g_cache.last_ok);
+
         return {{"ok", true},
                 {"clear", true},
                 {"repos", std::move(scan.repos)},
-                {"message", scan.message}};
+                {"message", scan.message},
+                {"others", std::move(others)},
+                {"sync", std::move(sync)}};
     }
     return {{"ok", false}, {"error", "unknown command: " + cmd}};
 }

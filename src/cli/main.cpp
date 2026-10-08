@@ -107,8 +107,8 @@ int cmd_status() {
     auto reply = ask(lockstep::ipc::kCmdStatus);
     if (!reply) return 1;
 
-    std::printf("%s\n", reply->value("message", "(no message)").c_str());
-
+    // This machine.
+    std::printf("this machine — %s\n", reply->value("message", "(no message)").c_str());
     if (auto it = reply->find("repos"); it != reply->end() && it->is_array()) {
         for (const auto& r : *it) {
             const char* mark = r.value("clean", false) ? "\xe2\x9c\x93" : "\xe2\x97\x8f";  // ✓ / ●
@@ -119,6 +119,47 @@ int cmd_status() {
                         describe_repo(r).c_str());
         }
     }
+
+    // The other machine(s), from the daemon's last background sync.
+    auto sync = reply->find("sync");
+    bool configured = sync != reply->end() && sync->value("configured", false);
+    auto others = reply->find("others");
+
+    std::printf("\n");
+    if (sync != reply->end() && !configured) {
+        std::printf("other machines — not available (%s)\n",
+                    sync->value("status", "rendezvous not configured").c_str());
+    } else if (others != reply->end() && others->is_array() && !others->empty()) {
+        std::string when = sync != reply->end() ? sync->value("last_sync", "") : "";
+        std::printf("other machines%s:\n",
+                    when.empty() ? "" : (" (synced " + when + ")").c_str());
+        for (const auto& m : *others) {
+            std::printf("  %s (as of %s)\n", m.value("machine", "?").c_str(),
+                        m.value("as_of", "?").c_str());
+            if (auto rr = m.find("repos"); rr != m.end() && rr->is_array()) {
+                for (const auto& r : *rr) {
+                    const char* mark = r.value("clean", false) ? "\xe2\x9c\x93" : "\xe2\x97\x8f";
+                    std::string branch = r.value("branch", "");
+                    std::printf("    %s %-24s %-12s %s\n", mark,
+                                r.value("name", "?").c_str(),
+                                branch.empty() ? "-" : branch.c_str(),
+                                describe_repo(r).c_str());
+                }
+            }
+        }
+        if (sync != reply->end()) {
+            int undec = sync->value("undecryptable", 0);
+            if (undec > 0)
+                std::printf("  (⚠ %d blob(s) undecryptable — key mismatch?)\n", undec);
+            std::string st = sync->value("status", "");
+            if (!st.empty()) std::printf("  (sync issue: %s — showing last known)\n", st.c_str());
+        }
+    } else if (sync != reply->end() && sync->value("ever", false)) {
+        std::printf("other machines — none have published yet\n");
+    } else {
+        std::printf("other machines — no sync yet\n");
+    }
+
     return reply->value("clear", true) ? 0 : 1;
 }
 
