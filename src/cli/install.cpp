@@ -128,7 +128,7 @@ std::optional<fs::path> hooks_dir(const std::string& repo) {
 
 #ifdef __APPLE__
 
-constexpr const char* kLabel = "com.ericlkampman.lockstep";
+constexpr const char* kLabel = "com.unlikelyware.lockstep";
 
 fs::path service_file() {
     return fs::path(home()) / "Library" / "LaunchAgents" / (std::string(kLabel) + ".plist");
@@ -196,11 +196,11 @@ void service_stop() {
 
 const char* kLogsHint = "logs: ~/Library/Logs/lockstep.log";
 const char* kRestartHint =
-    "after a rebuild: launchctl kickstart -k gui/$(id -u)/com.ericlkampman.lockstep";
+    "after a rebuild: launchctl kickstart -k gui/$(id -u)/com.unlikelyware.lockstep";
 
 // --- Tray LaunchAgent (separate from the daemon: it needs the GUI session) --
 
-constexpr const char* kTrayLabel = "com.ericlkampman.lockstep.tray";
+constexpr const char* kTrayLabel = "com.unlikelyware.lockstep.tray";
 
 fs::path tray_service_file() {
     return fs::path(home()) / "Library" / "LaunchAgents" /
@@ -263,6 +263,20 @@ void tray_stop() {
 }
 
 const char* kTrayRunningNote = "menubar app running (logs: ~/Library/Logs/lockstep-tray.log)";
+
+// Agents from before the rename to com.unlikelyware.*: stop and delete them so
+// the old daemon doesn't keep running beside (or block installing) the new one.
+void remove_legacy_agents() {
+    for (const char* label : {"com.ericlkampman.lockstep", "com.ericlkampman.lockstep.tray"}) {
+        std::string target = gui_domain() + "/" + label;
+        if (ok(run({"launchctl", "print", target}))) run({"launchctl", "bootout", target});
+        fs::path plist =
+            fs::path(home()) / "Library" / "LaunchAgents" / (std::string(label) + ".plist");
+        std::error_code ec;
+        if (fs::remove(plist, ec))
+            std::printf("  stopped and removed old agent %s\n", pretty(plist).c_str());
+    }
+}
 const char* kTrayBuildHint =
     "reconfigure with -DCMAKE_PREFIX_PATH=\"$(brew --prefix qt)\" to enable the menubar app";
 
@@ -368,6 +382,8 @@ bool tray_start(std::string* err) {
 }
 
 const char* kTrayRunningNote = "tray running (starts at each desktop login)";
+
+void remove_legacy_agents() {}  // launchd label rename only; nothing on Linux
 const char* kTrayBuildHint =
     "install Qt (sudo apt install qt6-base-dev), reconfigure, and rebuild — see "
     "LINUX_BRINGUP.md";
@@ -498,6 +514,7 @@ int cmd_install() {
                      "from the build output (e.g. ./build/bin/lockstep install)\n");
         return 1;
     }
+    remove_legacy_agents();
     // Two daemons would fight over the socket (the newer one steals it), so
     // refuse while one runs outside the service manager.
     if (daemon_up() && !service_loaded()) {
@@ -628,6 +645,7 @@ int cmd_install() {
 
 int cmd_uninstall() {
     std::printf("service\n");
+    remove_legacy_agents();
     service_stop();
     std::error_code ec;
     if (fs::remove(service_file(), ec))

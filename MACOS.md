@@ -48,7 +48,7 @@ itself) does the following and is safe to re-run:
    own; a foreign hook is left untouched.
 3. **Service** — writes the LaunchAgent plist and (re)starts the daemon.
 4. **Tray** (only if `lockstep-tray` was built — see below) — symlinks it, writes a
-   second LaunchAgent (`com.ericlkampman.lockstep.tray`), and starts the menubar app.
+   second LaunchAgent (`com.unlikelyware.lockstep.tray`), and starts the menubar app.
 
 `lockstep uninstall` reverses all of it (stops+removes both agents, removes lockstep's
 hooks, removes the symlinks) and **leaves your config and key in place**.
@@ -68,8 +68,11 @@ with your keychain (GitHub credentials) and GUI session — which a root LaunchD
 wouldn't have. Defined at:
 
 ```
-~/Library/LaunchAgents/com.ericlkampman.lockstep.plist
+~/Library/LaunchAgents/com.unlikelyware.lockstep.plist
 ```
+
+(Earlier builds used `com.ericlkampman.lockstep[.tray]`. `install` and `uninstall`
+stop and delete those old agents automatically.)
 
 Key plist settings: `RunAtLoad` (start at login) · `KeepAlive` (restart if it exits) ·
 `ThrottleInterval 10` (don't crash-loop faster than every 10s) · an explicit `PATH`
@@ -86,7 +89,7 @@ show it** — even though it's running. Use one of these instead:
 
 ```bash
 pgrep -fl lockstepd
-launchctl print gui/$(id -u)/com.ericlkampman.lockstep   # state = running, pid, last exit code
+launchctl print gui/$(id -u)/com.unlikelyware.lockstep   # state = running, pid, last exit code
 lockstep ping                                            # "daemon is up"
 ```
 
@@ -94,11 +97,11 @@ lockstep ping                                            # "daemon is up"
 
 ```bash
 # After rebuilding the binary — launchd keeps running the OLD one until you kick it:
-launchctl kickstart -k gui/$(id -u)/com.ericlkampman.lockstep
+launchctl kickstart -k gui/$(id -u)/com.unlikelyware.lockstep
 
 # Stop / start by hand:
-launchctl bootout   gui/$(id -u)/com.ericlkampman.lockstep
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ericlkampman.lockstep.plist
+launchctl bootout   gui/$(id -u)/com.unlikelyware.lockstep
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.unlikelyware.lockstep.plist
 ```
 
 **The rebuild rule:** `cmake --build build` updates the binary on disk, but the running
@@ -147,7 +150,7 @@ cmake --build build
 - Autostarts at login via its LaunchAgent, which uses `KeepAlive` only on crash — so
   choosing **Quit** from its menu stops it until next login (or `launchctl kickstart`).
 - Logs: `~/Library/Logs/lockstep-tray.log`. After a rebuild, refresh it with
-  `launchctl kickstart -k gui/$(id -u)/com.ericlkampman.lockstep.tray`.
+  `launchctl kickstart -k gui/$(id -u)/com.unlikelyware.lockstep.tray`.
 
 ## Everyday checks
 

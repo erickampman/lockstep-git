@@ -113,13 +113,13 @@ a tiny JSON blob).
 - Use a **LaunchAgent**, NOT a LaunchDaemon. LaunchDaemon runs as root at boot with
   no user session (no keychain, no GUI). LaunchAgent runs *as you* at login, with
   keychain access (GitHub token) and GUI session (tray). Lives in
-  `~/Library/LaunchAgents/com.ericlkampman.lockstep.plist`.
+  `~/Library/LaunchAgents/com.unlikelyware.lockstep.plist`.
 - plist keys: `Label`, `ProgramArguments`, `RunAtLoad=true`, `KeepAlive=true`,
   `ThrottleInterval=10` (avoid crash-loops), `StandardErrorPath`.
 - Manage with the modern API (old `launchctl load` is deprecated):
   - `launchctl bootstrap gui/$(id -u) <plist>`
-  - `launchctl kickstart -k gui/$(id -u)/com.ericlkampman.lockstep` (restart after rebuild)
-  - `launchctl bootout gui/$(id -u)/com.ericlkampman.lockstep` (stop)
+  - `launchctl kickstart -k gui/$(id -u)/com.unlikelyware.lockstep` (restart after rebuild)
+  - `launchctl bootout gui/$(id -u)/com.unlikelyware.lockstep` (stop)
 - **Socket activation** (the `Sockets` plist key) is a nice-to-have: launchd owns the
   listening socket and can launch the daemon on first connect (the hook connects
   anyway). But we also need periodic polling, so baseline is `RunAtLoad`+`KeepAlive`,
@@ -372,7 +372,7 @@ plain timer — event-driven would cut the staleness window); `lockstep why`.
      script, wording keyed off `$0`; compiled into the CLI from `hooks/pre-commit`).
      Honors `core.hooksPath`; never overwrites a hook that isn't lockstep's;
    - writes + enables `~/.config/systemd/user/lockstep.service` /
-     `~/Library/LaunchAgents/com.ericlkampman.lockstep.plist` (PATH includes
+     `~/Library/LaunchAgents/com.unlikelyware.lockstep.plist` (PATH includes
      Homebrew) and waits for the daemon to answer. Refuses if a hand-started
      daemon is running (two daemons would fight over the socket).
    - `lockstep uninstall` reverses it all, keeping config + key.
