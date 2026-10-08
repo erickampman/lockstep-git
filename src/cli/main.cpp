@@ -36,6 +36,8 @@ int usage(const char* argv0) {
                  "            --warn-exit: exit 3 if clear but with warnings\n"
                  "  ping      check the daemon is running\n"
                  "  keygen    generate the shared rendezvous key (once per pair)\n"
+                 "  add       watch a repo: lockstep add <path> (installs its hooks)\n"
+                 "  remove    stop watching: lockstep remove <path|name>\n"
                  "  install   link binaries into ~/.local/bin, install hooks in watched\n"
                  "            repos, and run the daemon at login (re-run after config\n"
                  "            changes)\n"
@@ -248,6 +250,14 @@ int main(int argc, char** argv) {
     if (cmd == "keygen") return cmd_keygen();
     if (cmd == "install") return lockstep::cli::cmd_install();
     if (cmd == "uninstall") return lockstep::cli::cmd_uninstall();
+    if (cmd == "add") {
+        if (argc < 3) { std::fprintf(stderr, "usage: lockstep add <path>\n"); return 2; }
+        return lockstep::cli::cmd_add(argv[2]);
+    }
+    if (cmd == "remove") {
+        if (argc < 3) { std::fprintf(stderr, "usage: lockstep remove <path|name>\n"); return 2; }
+        return lockstep::cli::cmd_remove(argv[2]);
+    }
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { usage(argv[0]); return 0; }
 
     std::fprintf(stderr, "lockstep: unknown command '%s'\n", cmd.c_str());

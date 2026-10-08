@@ -248,6 +248,99 @@ const char* kRestartHint = "after a rebuild: systemctl --user restart lockstep";
 
 #endif
 
+// --- Shared bits for add/remove --------------------------------------------
+
+fs::perms hook_perms() {
+    return fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+           fs::perms::others_read | fs::perms::others_exec;
+}
+fs::perms config_perms() {
+    return fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
+           fs::perms::others_read;
+}
+
+// The path string of a "repos" entry — a bare string or {"path": ...}.
+std::string entry_path(const nlohmann::ordered_json& e) {
+    if (e.is_string()) return e.get<std::string>();
+    if (e.is_object() && e.contains("path") && e["path"].is_string())
+        return e["path"].get<std::string>();
+    return "";
+}
+
+std::string expand_home(const std::string& p) {
+    if (!p.empty() && p[0] == '~') {
+        std::string h = home();
+        if (!h.empty()) {
+            if (p.size() == 1) return h;
+            if (p[1] == '/') return h + p.substr(1);
+        }
+    }
+    return p;
+}
+
+bool same_path(const std::string& a, const std::string& b) {
+    std::error_code e1, e2;
+    fs::path ca = fs::weakly_canonical(expand_home(a), e1);
+    fs::path cb = fs::weakly_canonical(expand_home(b), e2);
+    if (e1 || e2) return expand_home(a) == expand_home(b);
+    return ca == cb;
+}
+
+// Write lockstep's hooks into `repo`, printing a per-hook status line.
+void install_hooks_report(const std::string& repo) {
+    auto hdir = hooks_dir(repo);
+    if (!hdir) {
+        std::printf("  ! %s is not a git work tree; no hooks installed\n",
+                    pretty(repo).c_str());
+        return;
+    }
+    std::string line;
+    for (const char* name : kHookNames) {
+        fs::path hook = *hdir / name;
+        auto existing = read_file(hook);
+        std::string state;
+        if (existing && !is_our_hook(*existing))
+            state = "kept existing (not lockstep's)";
+        else if (existing && *existing == kHookScript)
+            state = "up to date";
+        else if (write_file(hook, kHookScript, hook_perms()))
+            state = existing ? "updated" : "installed";
+        else
+            state = "FAILED to write";
+        line += std::string(line.empty() ? "" : ", ") + name + " " + state;
+    }
+    std::printf("  hooks: %s\n", line.c_str());
+}
+
+// Remove lockstep's hooks from `repo` (leaves foreign hooks alone).
+void remove_hooks_report(const std::string& repo) {
+    auto hdir = hooks_dir(repo);
+    if (!hdir) return;
+    std::error_code ec;
+    std::string line;
+    for (const char* name : kHookNames) {
+        fs::path hook = *hdir / name;
+        auto existing = read_file(hook);
+        if (!existing) continue;
+        if (!is_our_hook(*existing)) {
+            line += std::string(line.empty() ? "" : ", ") + name + " kept (not lockstep's)";
+        } else if (fs::remove(hook, ec)) {
+            line += std::string(line.empty() ? "" : ", ") + name + " removed";
+        }
+    }
+    if (!line.empty()) std::printf("  hooks: %s\n", line.c_str());
+}
+
+// Read config.json as ordered JSON (preserving key order for rewriting). On a
+// missing file returns an empty object; on a parse error returns nullopt.
+std::optional<nlohmann::ordered_json> read_config_json() {
+    auto raw = read_file(config_path());
+    if (!raw) return nlohmann::ordered_json::object();
+    auto j = nlohmann::ordered_json::parse(*raw, nullptr, /*exceptions=*/false);
+    if (j.is_discarded() || !j.is_object()) return std::nullopt;
+    return j;
+}
+
 }  // namespace
 
 int cmd_install() {
@@ -400,6 +493,98 @@ int cmd_uninstall() {
     }
     std::printf("config and key left in place: %s\n",
                 pretty(fs::path(config_path()).parent_path()).c_str());
+    return 0;
+}
+
+int cmd_add(const std::string& arg) {
+    // Resolve to the repo root so adding a subdirectory adds the whole repo.
+    CmdResult top = run({"git", "-C", arg, "rev-parse", "--show-toplevel"});
+    if (!ok(top)) {
+        std::fprintf(stderr, "lockstep: not a git work tree: %s\n", arg.c_str());
+        return 1;
+    }
+    std::string repo = trim(top.out);
+
+    auto j = read_config_json();
+    if (!j) {
+        std::fprintf(stderr, "lockstep: config isn't valid JSON: %s\n",
+                     pretty(config_path()).c_str());
+        return 1;
+    }
+    if (!j->contains("repos") || !(*j)["repos"].is_array())
+        (*j)["repos"] = nlohmann::ordered_json::array();
+
+    for (const auto& e : (*j)["repos"]) {
+        std::string p = entry_path(e);
+        if (!p.empty() && same_path(p, repo)) {
+            std::printf("already watched: %s\n", pretty(repo).c_str());
+            install_hooks_report(repo);  // ensure hooks are present anyway
+            return 0;
+        }
+    }
+
+    (*j)["repos"].push_back(repo);
+    if (!write_file(config_path(), j->dump(2) + "\n", config_perms())) {
+        std::fprintf(stderr, "lockstep: could not write %s\n",
+                     pretty(config_path()).c_str());
+        return 1;
+    }
+    std::printf("added %s\n  to %s\n", pretty(repo).c_str(),
+                pretty(config_path()).c_str());
+    install_hooks_report(repo);
+    std::printf("the daemon picks it up on its next sync.\n");
+    return 0;
+}
+
+int cmd_remove(const std::string& arg) {
+    // Accept a path (resolved to its repo root) or a bare repo name.
+    std::string target_path, target_name;
+    if (CmdResult top = run({"git", "-C", arg, "rev-parse", "--show-toplevel"}); ok(top)) {
+        target_path = trim(top.out);
+        target_name = repo_name(target_path);
+    } else {
+        target_name = arg;  // bare name, e.g. "uw-core"
+    }
+
+    auto j = read_config_json();
+    if (!j) {
+        std::fprintf(stderr, "lockstep: config isn't valid JSON: %s\n",
+                     pretty(config_path()).c_str());
+        return 1;
+    }
+    if (!j->contains("repos") || !(*j)["repos"].is_array()) {
+        std::fprintf(stderr, "lockstep: not watched: %s\n", arg.c_str());
+        return 1;
+    }
+
+    nlohmann::ordered_json kept = nlohmann::ordered_json::array();
+    std::vector<std::string> removed;
+    for (const auto& e : (*j)["repos"]) {
+        std::string p = entry_path(e);
+        bool match = !p.empty() &&
+                     ((!target_path.empty() && same_path(p, target_path)) ||
+                      repo_name(expand_home(p)) == target_name);
+        if (match)
+            removed.push_back(expand_home(p));
+        else
+            kept.push_back(e);
+    }
+
+    if (removed.empty()) {
+        std::fprintf(stderr, "lockstep: not watched: %s\n", arg.c_str());
+        return 1;
+    }
+    (*j)["repos"] = std::move(kept);
+    if (!write_file(config_path(), j->dump(2) + "\n", config_perms())) {
+        std::fprintf(stderr, "lockstep: could not write %s\n",
+                     pretty(config_path()).c_str());
+        return 1;
+    }
+    for (const auto& r : removed) {
+        std::printf("removed %s from config\n", pretty(r).c_str());
+        remove_hooks_report(r);
+    }
+    std::printf("the daemon drops it on its next sync.\n");
     return 0;
 }
 
