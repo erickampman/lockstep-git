@@ -138,6 +138,10 @@ a tiny JSON blob).
   last-published state. (Details in [LINUX_BRINGUP.md](LINUX_BRINGUP.md).)
 - Because the daemon is a plain foreground process, launchd (mac) and systemd-user
   (linux) both just supervise it — **zero platform-specific code in the daemon.**
+- The **Linux tray is not autostarted by `install`** (unlike macOS, where it gets its
+  own LaunchAgent) — tray autostart is desktop-environment-specific. Add
+  `lockstep-tray` to your DE's autostart if you want it there; it needs a graphical
+  session.
 
 ## Naming (settled)
 
