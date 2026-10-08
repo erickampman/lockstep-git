@@ -317,11 +317,26 @@ fork()-in-a-thread hazard from shelling out to git.
   stays clear until the next tick, then flips to blocked on its own; SIGTERM still
   exits cleanly through the poll loop.
 
-**Deferred deliberately (not yet built):** Qt tray; FSEvents/fsmonitor push watching
-(the tick is currently a plain timer — good enough, but event-driven would cut the
-staleness window); LaunchAgent plist + systemd user unit; `lockstep install`
-subcommand; `pre-push` hook; `lockstep why`; `status` showing the cached other-machine
-state (the cache now has it — a cheap, high-value follow-up toward the UI).
+**Slice 5 — repo management + Qt tray — DONE (2026-10-08).**
+- `status` now shows the cached other-machine state (this-machine / other-machines
+  view) — done earlier this day.
+- **`lockstep add <path>` / `remove <path|name>`** (`src/cli/install.cpp`): edit the
+  watched-repo list in `config.json` (via `ordered_json`, so key order and
+  `{"path","depends_on"}` entries survive) and install/remove that repo's hooks.
+  Daemon reloads on its next tick — no restart.
+- **`lockstep-tray`** (`src/tray/`, optional Qt target, guarded by `find_package(Qt6
+  QUIET)` so the core still builds without Qt): polls `status` every 5s, shows a
+  green/yellow/red menubar dot (red = another machine has pending work in a repo this
+  machine watches; yellow = busy elsewhere / stale sync / key mismatch), notifies on
+  worsening transitions, lists both machines' per-repo state, and offers "Add repo…"
+  (folder picker) + "Remove repo" that shell out to `add`/`remove`. Enable with
+  `-DCMAKE_PREFIX_PATH="$(brew --prefix qt)"`.
+
+**Deferred deliberately (not yet built):** tray **autostart** (not yet wired into
+`lockstep install` — launched by hand for now) and macOS **LSUIElement** bundling (the
+bare binary shows a Dock icon; a tiny `.app` with `LSUIElement=true` makes it
+menubar-only); FSEvents/fsmonitor push watching (tick is a plain timer — event-driven
+would cut the staleness window); `lockstep why`.
 
 ## Suggested next steps on the Mac
 
@@ -344,7 +359,8 @@ state (the cache now has it — a cheap, high-value follow-up toward the UI).
    - `lockstep uninstall` reverses it all, keeping config + key.
    Pre-push runs the same verdict as pre-commit (blocks on the other machine's
    pending work on this repo, prompts on dependency warnings).
-6. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
+6. ~~Qt tray + `add`/`remove`.~~ DONE (slice 5). Remaining tray polish: autostart via
+   `install`, and macOS `.app`/LSUIElement bundling so it's menubar-only.
 
 ## Dependency-aware watching (Eric, 2026-10-08) — BUILT
 
