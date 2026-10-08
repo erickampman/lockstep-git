@@ -18,21 +18,28 @@ sync. See DESIGN.md for the why.
 
 ## Current state (as of the Mac work, 2026-10-08)
 
-Four slices are done and verified on the Mac, all on `master`:
-- CMake scaffold; `lockstepd` daemon + `lockstep` CLI + `pre-commit` hook, talking
+Everything through **slice 5** is done and verified on the Mac, all on `master`, and
+Linux has run through the daemon/CLI/hooks side at least once:
+- CMake scaffold; `lockstepd` daemon + `lockstep` CLI + `pre-commit`/`pre-push` hooks
   over a Unix socket.
 - Config-driven watching of multiple repos; real git state via shell-out.
 - Rendezvous crypto (libsodium AEAD), per-machine state blob, blocking verdict.
 - `GitHubRendezvous` — publish/fetch the encrypted blobs through the private repo.
+- **Background tick loop** (daemon syncs on a timer; `verdict`/`status` read a cache —
+  no network on the commit path).
+- **Dependency-aware watching** (`depends_on` + submodule pin drift → warnings, not
+  blocks) and `lockstep status` showing both machines.
+- **Slice 5:** `lockstep add`/`remove`, `lockstep install`/`uninstall`, and an optional
+  Qt menubar tray. See "Slice 5 delta" below for what's new to pull on Linux.
 
-It works end to end. The **next planned slice is a background tick loop** (see
-"Known caveat" below). Nothing Linux-specific has been built or tested yet — that's
-this document's job.
+It works end to end on both machines. If you're updating an existing Linux checkout
+rather than starting cold, jump to "Updating an existing Linux checkout" below.
 
 ## Dependencies (Linux)
 
-The core build needs only these. **Qt is NOT needed** (the tray target isn't built
-yet), and **libgit2 is NOT needed** (we shell out to the `git` binary).
+The core build needs only these. **Qt is NOT needed for the core** (it's only for the
+optional tray — see "Slice 5 delta"), and **libgit2 is NOT needed** (we shell out to
+the `git` binary).
 
 - A C++20 compiler (g++ ≥ 11 or clang ≥ 14)
 - CMake ≥ 3.24
@@ -130,15 +137,60 @@ all code, all config shape) is in git.
 
 ## Known caveat to be aware of
 
-No background tick loop yet, so `verdict` does a **live `git fetch`/`push` to the
-rendezvous on every call** — a `pre-commit` hook therefore pays a network round-trip
-to GitHub per commit (~0.5–2s). Correct but slow; offline it falls back to
-stale-but-usable local state and still returns a verdict. The planned tick loop makes
-the daemon sync in the background so `verdict` reads a cache. If per-commit latency is
-annoying on Linux, that slice is the fix — see DESIGN.md "next steps".
+The daemon syncs on a **timer** (`tick_seconds`, default 30), so cross-machine state
+can be up to one tick stale — surfaced by the "as of Xm ago" text in messages.
+`verdict` reads the cached state (no network on the commit path), and a transient
+fetch error keeps the last-known state rather than dropping the guard. Event-driven
+(FSEvents/fsmonitor) watching to shrink the window is a future refinement.
 
 ## Linux autostart
 
 `lockstep install` writes `~/.config/systemd/user/lockstep.service` and enables it.
 The daemon is a plain foreground process (logs to stdout/stderr, clean SIGTERM), so
 systemd just supervises it — no platform-specific code in the daemon.
+
+## Slice 5 delta — repo management + optional tray
+
+New since Linux last synced. To catch up an existing checkout, see "Updating an
+existing Linux checkout" below; what's new:
+
+**`lockstep add` / `remove` — manage watched repos without hand-editing JSON:**
+```bash
+lockstep add  ~/dev/some-project     # appends to config.json, installs its hooks
+lockstep remove some-project         # by repo name, or by path; removes its hooks
+```
+Config is rewritten preserving key order and `{"path","depends_on"}` entries. The
+daemon reloads on its next tick — no restart. (Dependency-aware watching: write a repo
+as `{"path": "~/dev/app", "depends_on": ["uw-core"]}` and the other machine's pending
+work in `uw-core` becomes a *warning* when you commit in `app`, not a block. Git
+submodules that point at another watched repo are detected automatically.)
+
+**Optional Qt menubar tray (`lockstep-tray`)** — a thin GUI client of the daemon: a
+status-tinted icon (green/amber/red) plus Add/Remove-repo menu items. It's **off
+unless Qt is found at configure time**; the core always builds without it.
+```bash
+sudo apt install qt6-base-dev        # Debian/Ubuntu (Fedora: qt6-qtbase-devel)
+cmake -S . -B build -DCMAKE_PREFIX_PATH="$(qmake6 -query QT_INSTALL_PREFIX)"
+cmake --build build                  # now also builds build/bin/lockstep-tray
+```
+Linux tray caveats (macOS has the cleaner story here):
+- `lockstep install` does **not** autostart the tray on Linux — it only symlinks the
+  binary and prints a note. Add `lockstep-tray` to your desktop environment's autostart
+  yourself (it needs the graphical session).
+- The tray uses a **StatusNotifierItem**: KDE/most DEs host it natively, but **GNOME
+  needs an AppIndicator extension** or the icon won't appear.
+
+## Updating an existing Linux checkout
+
+If Linux already ran through an earlier slice and you just need to catch up:
+```bash
+cd ~/dev/lockstep-git        # your clone
+git pull
+cmake --build build          # CMake auto-reconfigures (the new src/tray subdir is
+                             # Qt-guarded, so it's skipped unless Qt is installed)
+lockstep install             # refresh binaries/hooks; restarts the systemd --user daemon
+lockstep status              # confirm both machines
+```
+Hooks changed across slices, so re-running `install` (idempotent) keeps every watched
+repo's `pre-commit`/`pre-push` current. Config is per-machine — manage Linux's watched
+repos with `lockstep add`/`remove`; nothing about the repo list syncs from the Mac.
