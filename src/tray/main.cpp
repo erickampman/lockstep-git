@@ -333,21 +333,30 @@ struct Tray {
         if (!sync.value("configured", true)) yellow = true;
         if (sync.value("undecryptable", 0) > 0) yellow = true;
         if (!sync.value("status", std::string()).empty()) yellow = true;
+        QString redDetail, yellowDetail;
         for (const auto& m : st.value("others", json::array())) {
             for (const auto& r : m.value("repos", json::array())) {
-                if (r.value("clean", true)) continue;
+                bool notClean = !r.value("clean", true);  // dirty or unpushed
+                bool behind = r.value("has_upstream", false) && r.value("behind", 0) > 0;
+                if (!notClean && !behind) continue;  // truly clean and current
                 std::string name = r.value("name", "");
                 QString line =
                     QString::fromStdString(m.value("machine", "?")) + " · " +
                     QString::fromStdString(name) + " — " + describeRepo(r);
-                if (localNames.count(name)) {
+                // Dirty/unpushed work in a repo we also watch would block a commit
+                // here -> red. The other machine being behind (stale, needs to pull)
+                // or busy on a repo we don't track is a heads-up -> yellow, mirroring
+                // how the left side treats this machine being behind.
+                if (notClean && localNames.count(name)) {
                     red = true;
-                    if (detail.isEmpty()) detail = line;
+                    if (redDetail.isEmpty()) redDetail = line;
                 } else {
                     yellow = true;
+                    if (yellowDetail.isEmpty()) yellowDetail = line;
                 }
             }
         }
+        detail = !redDetail.isEmpty() ? redDetail : yellowDetail;  // red wins
         Health remote = red ? Health::Red : (yellow ? Health::Yellow : Health::Green);
         Health h = worse(local, remote);
         if (detail.isEmpty() && local == h) detail = localDetail;
@@ -398,24 +407,25 @@ struct Tray {
             addInfo(QStringLiteral("Other machines") +
                     (when.isEmpty() ? QString() : QStringLiteral(" (synced ") + when + ")"));
             for (const auto& m : others) {
-                QStringList all, pending;
+                QStringList all, attention;
                 for (const auto& r : m.value("repos", json::array())) {
-                    bool clean = r.value("clean", true);
+                    bool behind = r.value("has_upstream", false) && r.value("behind", 0) > 0;
+                    bool ok = r.value("clean", true) && !behind;  // clean and current
                     QString line = QString::fromStdString(r.value("name", "?")) +
                                    QStringLiteral(" — ") + describeRepo(r);
-                    all << mark(clean) + line;
-                    if (!clean) pending << line;
+                    all << mark(ok) + line;
+                    if (!ok) attention << line;
                 }
-                QString summary = pending.isEmpty()
+                QString summary = attention.isEmpty()
                                       ? QStringLiteral("all clear")
-                                      : QStringLiteral("%1 with pending work").arg(pending.size());
+                                      : QStringLiteral("%1 need attention").arg(attention.size());
                 addDetails(&menu,
-                           QStringLiteral("  ") + mark(pending.isEmpty()) +
+                           QStringLiteral("  ") + mark(attention.isEmpty()) +
                                QString::fromStdString(m.value("machine", "?")) +
                                QStringLiteral(" — ") + summary + QStringLiteral(" (as of ") +
                                QString::fromStdString(m.value("as_of", "?")) + ")",
                            all);
-                for (const auto& line : pending) addInfo(QStringLiteral("      ") + mark(false) + line);
+                for (const auto& line : attention) addInfo(QStringLiteral("      ") + mark(false) + line);
             }
         }
 
