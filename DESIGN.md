@@ -3,9 +3,9 @@
 > Handoff doc for continuing this side project. Captures every decision reached in
 > the exploratory + build sessions so a fresh Claude (or me) can pick up cold.
 >
-> **Switching to the Linux machine?** Start with [LINUX_BRINGUP.md](LINUX_BRINGUP.md)
-> — the operational cold-start guide — then use this doc for the full rationale and
-> the slice-by-slice progress log.
+> **Operating it?** [MACOS.md](MACOS.md) (build, install, launchd daemon lifecycle)
+> and [LINUX_BRINGUP.md](LINUX_BRINGUP.md) (Linux cold-start) are the operational
+> guides. This doc is the full rationale and the slice-by-slice progress log.
 
 ## Problem
 
