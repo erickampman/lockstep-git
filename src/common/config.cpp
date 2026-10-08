@@ -1,6 +1,7 @@
 #include "config.h"
 
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -27,6 +28,12 @@ std::string expand_tilde(const std::string& p) {
 
 }  // namespace
 
+std::string repo_name(const std::string& path) {
+    std::string name = std::filesystem::path(path).filename().string();
+    if (name.empty()) name = std::filesystem::path(path).parent_path().filename().string();
+    return name.empty() ? path : name;  // trailing-slash guard
+}
+
 std::string config_path() {
     if (std::string o = env_or_empty("LOCKSTEP_CONFIG"); !o.empty()) return o;
     if (std::string xdg = env_or_empty("XDG_CONFIG_HOME"); !xdg.empty())
@@ -51,7 +58,18 @@ Config load_config(std::string* error) {
 
     if (auto it = json.find("repos"); it != json.end() && it->is_array()) {
         for (const auto& r : *it) {
-            if (r.is_string()) cfg.repos.push_back(expand_tilde(r.get<std::string>()));
+            // Each entry is either "path" or {"path": ..., "depends_on": [names]}.
+            if (r.is_string()) {
+                cfg.repos.push_back(expand_tilde(r.get<std::string>()));
+            } else if (r.is_object() && r.contains("path") && r["path"].is_string()) {
+                std::string path = expand_tilde(r["path"].get<std::string>());
+                cfg.repos.push_back(path);
+                if (auto d = r.find("depends_on"); d != r.end() && d->is_array()) {
+                    auto& deps = cfg.depends_on[repo_name(path)];
+                    for (const auto& dep : *d)
+                        if (dep.is_string()) deps.push_back(dep.get<std::string>());
+                }
+            }
         }
     }
     if (auto it = json.find("machine"); it != json.end() && it->is_string()) {

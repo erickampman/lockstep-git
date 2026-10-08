@@ -5,6 +5,11 @@
 # the other machine has pending work. Thin by design: all the logic lives in
 # the daemon; this just relays the verdict.
 #
+# Warnings (a dependency like uw-core has pending work on the other machine, or
+# a submodule pin has drifted) don't block on their own: at a terminal you're
+# asked "Commit anyway? [y/N]"; with no terminal (IDE, GUI client, script) the
+# warning is printed and the commit proceeds.
+#
 # Install: symlink or copy into a repo's .git/hooks/pre-commit (the `lockstep
 # install` subcommand will do this in a later slice).
 #
@@ -22,9 +27,28 @@ else
     exit 0
 fi
 
-if "$LOCKSTEP" verdict; then
-    exit 0
-else
-    echo "⛔ lockstep: blocked (run 'lockstep status' for details, or LOCKSTEP_SKIP=1 to override)" >&2
-    exit 1
-fi
+"$LOCKSTEP" verdict --warn-exit
+case $? in
+    0)
+        exit 0
+        ;;
+    3)
+        # Clear, but with warnings. Prompt only when someone is at a terminal:
+        # stderr must be a tty and /dev/tty openable (git doesn't give hooks
+        # the terminal on stdin).
+        if [ -t 2 ] && (: </dev/tty) 2>/dev/null; then
+            printf 'Commit anyway? [y/N] ' >&2
+            read -r answer </dev/tty
+            case $answer in
+                y|Y|yes|Yes|YES) exit 0 ;;
+            esac
+            echo "lockstep: commit aborted" >&2
+            exit 1
+        fi
+        exit 0
+        ;;
+    *)
+        echo "⛔ lockstep: blocked (run 'lockstep status' for details, or LOCKSTEP_SKIP=1 to override)" >&2
+        exit 1
+        ;;
+esac

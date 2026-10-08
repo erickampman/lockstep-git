@@ -320,18 +320,32 @@ subcommand; `lockstep why`.
    the `pre-push` hook.
 6. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
 
-## Future idea — dependency-aware watching (Eric, 2026-10-08)
+## Dependency-aware watching (Eric, 2026-10-08) — BUILT
 
 Projects depend on shared libs: **StageHand** and **Umpire** both need **uw-core**.
-Today lockstep treats each watched repo independently. The ask: a repo's verdict
-should also consider its *dependencies'* cross-machine state — e.g. committing in
-StageHand on the Mac should warn if **uw-core** has uncommitted/unpushed work on the
-other machine, because StageHand's dependency is out of sync even though StageHand
-itself looks clean. Shape (not built): a per-repo `depends_on: ["uw-core", ...]` in
-config; verdict unions the repo's own blockers with its dependencies' blockers from
-the other machine's blob (matched by basename, as today). Deferred — captured so it
-isn't lost. (StageHand and Umpire aren't cloned on this Mac yet, so they're not in
-the current watch list.)
+A repo's verdict also considers its dependencies, but dependencies **warn, never
+block**: the hook asks "Commit anyway? [y/N]" (default No) when at a terminal, and
+just prints the warning when there's no terminal (IDE, GUI client, script).
+
+- **Dependencies** = config `depends_on` ∪ submodules whose `.gitmodules` URL
+  basename names a watched repo (StageHand's `external/uw-core` is detected
+  automatically). Declare by writing a repo entry as an object:
+  `{"path": "~/dev/dev-midi/UmpireDAW", "depends_on": ["uw-core"]}`.
+- **Cross-machine warning:** a dependency with uncommitted/unpushed work in the
+  other machine's blob (matched by basename, as today). If the other machine
+  doesn't watch the dependency at all, the verdict adds a non-prompting note —
+  **the dependency must be watched on both machines** to be checked.
+- **Pin-drift warning (local):** a submodule pin committed in the parent's HEAD
+  that differs from the standalone clone's HEAD (behind, ahead, diverged, or a
+  commit the clone doesn't have).
+- **Wire/CLI:** the verdict reply gains `warnings` (each with a `message`) and
+  `notes`. `lockstep verdict --warn-exit` exits 3 for "clear but warnings"; plain
+  `verdict` still exits 0 then, so older copied hooks never start blocking.
+
+Not covered: unpushed commits made *inside* a submodule checkout (e.g. in
+`StageHand/external/uw-core`) — the dirty-submodule case shows up as StageHand
+being dirty, but unpushed submodule commits rely on
+`git push --recurse-submodules=check`.
 
 ## Current config
 

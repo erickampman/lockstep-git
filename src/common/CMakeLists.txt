@@ -8,6 +8,7 @@ add_library(lockstep_common STATIC
     blob.cpp
     config.cpp
     crypto.cpp
+    deps.cpp
     git.cpp
     ipc.cpp
     paths.cpp

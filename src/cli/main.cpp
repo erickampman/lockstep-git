@@ -2,6 +2,7 @@
 //
 //   lockstep status   human-facing summary of both machines
 //   lockstep verdict  "am I clear to commit?" — exit 0 clear, 1 blocked
+//                     (--warn-exit: exit 3 when clear but with warnings)
 //   lockstep ping     liveness check
 //
 // Everything here is IPC + formatting; the daemon holds the state.
@@ -30,6 +31,7 @@ int usage(const char* argv0) {
                  "usage: %s <command>\n"
                  "  status    summary of watched repos / both machines\n"
                  "  verdict   exit 0 if clear to commit, 1 if blocked\n"
+                 "            --warn-exit: exit 3 if clear but with warnings\n"
                  "  ping      check the daemon is running\n"
                  "  keygen    generate the shared rendezvous key (once per pair)\n",
                  argv0);
@@ -120,7 +122,12 @@ int cmd_status() {
     return reply->value("clear", true) ? 0 : 1;
 }
 
-int cmd_verdict() {
+// Exit code for "clear, but with warnings" under --warn-exit. Without the flag
+// warnings exit 0, so older hooks that treat any non-zero as "blocked" keep
+// working unchanged.
+constexpr int kExitWarn = 3;
+
+int cmd_verdict(bool warn_exit) {
     json req = {{"cmd", lockstep::ipc::kCmdVerdict}};
     if (std::string repo = current_repo_name(); !repo.empty()) req["repo"] = repo;
 
@@ -135,12 +142,23 @@ int cmd_verdict() {
     }
     bool clear = reply->value("clear", false);
     std::string msg = reply->value("message", clear ? "clear" : "blocked");
-    if (clear) {
-        std::printf("%s\n", msg.c_str());
-        return 0;
+    if (clear) std::printf("%s\n", msg.c_str());
+    else std::fprintf(stderr, "%s\n", msg.c_str());
+
+    bool warned = false;
+    if (auto it = reply->find("warnings"); it != reply->end() && it->is_array()) {
+        for (const auto& w : *it) {
+            std::fprintf(stderr, "\xe2\x9a\xa0 %s\n", w.value("message", "?").c_str());  // ⚠
+            warned = true;
+        }
     }
-    std::fprintf(stderr, "%s\n", msg.c_str());
-    return 1;
+    if (auto it = reply->find("notes"); it != reply->end() && it->is_array()) {
+        for (const auto& n : *it)
+            if (n.is_string()) std::fprintf(stderr, "  note: %s\n", n.get<std::string>().c_str());
+    }
+
+    if (!clear) return 1;
+    return (warned && warn_exit) ? kExitWarn : 0;
 }
 
 int cmd_keygen() {
@@ -178,7 +196,8 @@ int main(int argc, char** argv) {
 
     if (cmd == "ping") return cmd_ping();
     if (cmd == "status") return cmd_status();
-    if (cmd == "verdict") return cmd_verdict();
+    if (cmd == "verdict")
+        return cmd_verdict(argc > 2 && std::strcmp(argv[2], "--warn-exit") == 0);
     if (cmd == "keygen") return cmd_keygen();
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { usage(argv[0]); return 0; }
 

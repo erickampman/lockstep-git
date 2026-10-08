@@ -3,7 +3,6 @@
 #include <unistd.h>
 
 #include <ctime>
-#include <filesystem>
 
 #include "git.h"
 
@@ -27,8 +26,7 @@ MachineBlob gather(const Config& cfg) {
     for (const auto& path : cfg.repos) {
         RepoState s = inspect(path);
         RepoBrief r;
-        r.name = std::filesystem::path(path).filename().string();
-        if (r.name.empty()) r.name = path;  // trailing-slash guard
+        r.name = repo_name(path);
         r.branch = s.branch;
         r.dirty = s.dirty;
         r.has_upstream = s.has_upstream;

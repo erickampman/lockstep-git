@@ -8,6 +8,7 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <ctime>
@@ -23,6 +24,7 @@
 #include "blob.h"
 #include "config.h"
 #include "crypto.h"
+#include "deps.h"
 #include "git.h"
 #include "ipc.h"
 #include "paths.h"
@@ -159,36 +161,80 @@ void publish_self(const lockstep::Config& cfg, const lockstep::crypto::Key& key,
         log_line("warn", "publish failed: " + err);
 }
 
+// Human description of a repo's pending work, e.g. "3 uncommitted, 1 unpushed".
+std::string pending_detail(const lockstep::RepoBrief& r) {
+    std::string what;
+    if (r.dirty > 0) what += std::to_string(r.dirty) + " uncommitted";
+    if (r.ahead > 0) {
+        if (!what.empty()) what += ", ";
+        what += std::to_string(r.ahead) + " unpushed";
+    }
+    return what;
+}
+
+// Local warnings for committing in `repo`: its submodule pins of watched repos
+// that don't match the standalone clone's HEAD.
+json pin_warnings(const lockstep::Config& cfg, const std::string& repo) {
+    json warnings = json::array();
+    auto path = lockstep::find_repo_path(cfg, repo);
+    if (!path) return warnings;
+    for (const auto& d : lockstep::pin_drift(cfg, *path)) {
+        std::string msg = repo + " pins " + d.dep_name + " (" + d.sub_path + ") ";
+        if (d.unknown) {
+            msg += "at a commit your " + d.dep_name + " clone doesn't have — pull " +
+                   d.dep_name + "?";
+        } else if (d.pin_only == 0) {
+            msg += std::to_string(d.clone_only) + " commit(s) behind your " +
+                   d.dep_name + " clone — update the submodule?";
+        } else if (d.clone_only == 0) {
+            msg += std::to_string(d.pin_only) + " commit(s) ahead of your " +
+                   d.dep_name + " clone — pull " + d.dep_name + "?";
+        } else {
+            msg += "on a commit that has diverged from your " + d.dep_name + " clone";
+        }
+        warnings.push_back({{"kind", "pin"}, {"repo", d.dep_name}, {"message", msg}});
+    }
+    return warnings;
+}
+
 // Decide whether committing here is clear, given the other machine(s)' state.
 // Policy: fail OPEN (clear, with a note) when the rendezvous/key isn't set up or
 // can't be read — a dev tool must not block real work over its own plumbing.
 // Block only on a definite "other machine has pending work" signal. `repo_filter`
 // (optional) restricts the check to one repo name (the committing repo).
+//
+// Dependencies of the committing repo never block; they produce `warnings`
+// (pending work on a dependency elsewhere, or local submodule pin drift), which
+// the hook turns into a "commit anyway?" prompt.
 json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter) {
     std::string key_path = resolve_key_path(cfg);
 
+    json warnings = repo_filter.empty() ? json::array() : pin_warnings(cfg, repo_filter);
+    std::vector<std::string> deps;
+    if (!repo_filter.empty()) deps = lockstep::dependencies(cfg, repo_filter);
+    auto is_dep = [&](const std::string& n) {
+        return std::find(deps.begin(), deps.end(), n) != deps.end();
+    };
+    // Every reply carries the warnings gathered so far.
+    auto reply = [&](bool clear, const std::string& msg) {
+        return json{{"ok", true}, {"clear", clear}, {"message", msg},
+                    {"warnings", warnings}};
+    };
+
     auto rv = make_rendezvous(cfg);
-    if (!rv) {
-        return {{"ok", true}, {"clear", true},
-                {"message", "clear (rendezvous not configured)"}};
-    }
+    if (!rv) return reply(true, "clear (rendezvous not configured)");
     std::string kerr;
     auto key = lockstep::crypto::load_key(key_path, &kerr);
-    if (!key) {
-        return {{"ok", true}, {"clear", true},
-                {"message", "clear (no shared key: " + kerr + ")"}};
-    }
+    if (!key) return reply(true, "clear (no shared key: " + kerr + ")");
 
     publish_self(cfg, *key, *rv);  // keep our slot fresh
 
     std::string ferr;
     auto others = rv->fetch_others(lockstep::machine_id(cfg), &ferr);
-    if (!others) {
-        return {{"ok", true}, {"clear", true},
-                {"message", "clear (rendezvous unreadable: " + ferr + ")"}};
-    }
+    if (!others) return reply(true, "clear (rendezvous unreadable: " + ferr + ")");
 
     json blockers = json::array();
+    json notes = json::array();
     int undecryptable = 0;
     for (const auto& [machine, enc] : *others) {
         auto plain = lockstep::crypto::decrypt(*key, enc);
@@ -203,37 +249,52 @@ json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter)
         auto b = lockstep::blob_from_json(parsed);
         if (!b) continue;
 
+        std::vector<std::string> unseen = deps;  // deps this machine doesn't report
         for (const auto& r : b->repos) {
-            if (!repo_filter.empty() && r.name != repo_filter) continue;
+            bool dep = is_dep(r.name);
+            if (auto u = std::find(unseen.begin(), unseen.end(), r.name); u != unseen.end())
+                unseen.erase(u);
+            if (!dep && !repo_filter.empty() && r.name != repo_filter) continue;
             if (r.clean) continue;
-            std::string what;
-            if (r.dirty > 0) what += std::to_string(r.dirty) + " uncommitted";
-            if (r.ahead > 0) {
-                if (!what.empty()) what += ", ";
-                what += std::to_string(r.ahead) + " unpushed";
+            json item = {{"machine", b->machine}, {"repo", r.name}, {"branch", r.branch},
+                         {"detail", pending_detail(r)}, {"as_of", human_age(b->timestamp)}};
+            if (dep) {
+                item["kind"] = "dependency";
+                item["message"] = b->machine + " has " + pending_detail(r) + " on " +
+                                  r.name + " (" + human_age(b->timestamp) + "), which " +
+                                  repo_filter + " depends on";
+                warnings.push_back(std::move(item));
+            } else {
+                blockers.push_back(std::move(item));
             }
-            blockers.push_back(
-                {{"machine", b->machine}, {"repo", r.name}, {"branch", r.branch},
-                 {"detail", what}, {"as_of", human_age(b->timestamp)}});
         }
+        for (const auto& u : unseen)
+            notes.push_back(u + " isn't watched on " + b->machine +
+                            ", so its state there is unknown");
     }
 
+    json out;
     if (blockers.empty()) {
-        std::string msg = "clear (other machine has no pending work)";
+        std::string msg = warnings.empty()
+                              ? "clear (other machine has no pending work)"
+                              : "not blocked, but:";
         if (undecryptable > 0)
             msg = "clear, BUT could not decrypt " + std::to_string(undecryptable) +
                   " blob(s) — key mismatch between machines? guard is not protecting"
                   " those.";
-        return {{"ok", true}, {"clear", true}, {"message", msg}};
+        out = reply(true, msg);
+    } else {
+        // Human one-liner for the first blocker; full list in `blockers`.
+        const auto& b0 = blockers.front();
+        std::string msg = "\xe2\x9b\x94 " + b0.value("machine", "?") + " has " +
+                          b0.value("detail", "pending work") + " on " +
+                          b0.value("repo", "?") + " (" + b0.value("as_of", "") +
+                          "). Pull or resolve before committing here.";
+        out = reply(false, msg);
+        out["blockers"] = std::move(blockers);
     }
-    // Human one-liner for the first blocker; full list in `blockers`.
-    const auto& b0 = blockers.front();
-    std::string msg = "\xe2\x9b\x94 " + b0.value("machine", "?") + " has " +
-                      b0.value("detail", "pending work") + " on " +
-                      b0.value("repo", "?") + " (" + b0.value("as_of", "") +
-                      "). Pull or resolve before committing here.";
-    return {{"ok", true}, {"clear", false}, {"message", msg},
-            {"blockers", std::move(blockers)}};
+    if (!notes.empty()) out["notes"] = std::move(notes);
+    return out;
 }
 
 // Build the reply for one request.
