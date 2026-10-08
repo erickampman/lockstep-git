@@ -131,6 +131,11 @@ a tiny JSON blob).
 
 - **systemd `--user` unit**: `~/.config/systemd/user/lockstep.service`,
   `systemctl --user enable --now lockstep`.
+- An enabled `--user` service starts with the user session (login). To run the daemon
+  at boot without a login (headless/SSH box, or to keep publishing while logged out),
+  enable lingering once: `loginctl enable-linger "$USER"`. Without it the daemon only
+  runs while logged in — usually fine, since the other machine still sees the
+  last-published state. (Details in [LINUX_BRINGUP.md](LINUX_BRINGUP.md).)
 - Because the daemon is a plain foreground process, launchd (mac) and systemd-user
   (linux) both just supervise it — **zero platform-specific code in the daemon.**
 

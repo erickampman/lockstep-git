@@ -149,6 +149,24 @@ fetch error keeps the last-known state rather than dropping the guard. Event-dri
 The daemon is a plain foreground process (logs to stdout/stderr, clean SIGTERM), so
 systemd just supervises it — no platform-specific code in the daemon.
 
+**Starts with your user session.** An enabled `--user` service starts when your user
+session starts — i.e. when you log in — and stops when your last session ends. For a
+headless/SSH box or if you want the daemon publishing your state even while you're not
+logged in, enable **lingering** once:
+
+```bash
+loginctl enable-linger "$USER"     # keep the user manager (and lockstep) running at boot
+```
+
+With lingering on, the `--user` daemon comes up at boot without a login and keeps your
+rendezvous blob fresh. Without it, the daemon only runs while you're logged in — which
+is usually fine, since the Mac still sees your last-published state (with its "as of"
+age) in the meantime. (`loginctl disable-linger "$USER"` reverses it.)
+
+The tray is not autostarted by `install` on Linux (see "Slice 5 delta") — add
+`lockstep-tray` to your desktop environment's autostart if you want it, and it needs a
+graphical session regardless of lingering.
+
 ## Slice 5 delta — repo management + optional tray
 
 New since Linux last synced. To catch up an existing checkout, see "Updating an
