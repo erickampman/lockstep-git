@@ -408,6 +408,52 @@ Not covered: unpushed commits made *inside* a submodule checkout (e.g. in
 being dirty, but unpushed submodule commits rely on
 `git push --recurse-submodules=check`.
 
+## Tray as a project launcher (Eric, 2026-10-08) — IDEA, not built
+
+Eric bounces among projects and terminals. The daemon already knows every watched
+repo and its state, so the tray can be a one-stop place to *get to* the right tool
+for a repo. Principle: **launch existing tools, don't build them.** No built-in
+editor, diff viewer, or staging UI (that's GitHub Desktop/Fork/Tower territory),
+and **no blind commit & push** from the tray. Commits always go through a UI where
+you review the diff first.
+
+- **Per-repo tray menu:** View changes / Commit… / Open in editor / Open terminal /
+  Pull (plus maybe "pull all that are behind"). Matching CLI: `lockstep open <name>`,
+  `lockstep pull <name>`.
+- **View changes:** `git difftool --dir-diff --no-prompt` in the repo, which uses
+  whatever `diff.tool` git is configured with. Eric's Mac already has
+  `diff.tool = bc` (Beyond Compare, `bcomp` in `/usr/local/bin`), and BC handles dir
+  diffs well. Terminal diff tools (vimdiff, delta) would need a terminal window.
+- **Commit…:** launch `git gui` (ships with git; on macOS `brew install git-gui`,
+  since Apple's git lacks it) for review, staging, commit and push. Hooks still run,
+  so the guard applies. Configurable so Fork/Tower/GitHub Desktop users can swap in
+  their own tool's command-line launcher.
+- **Open in editor:** open the repo *folder* (`open -a "<App>"` / `code <path>` on
+  macOS, the editor command or `xdg-open` on Linux). Don't reuse git's
+  `core.editor`; it's often a terminal editor.
+- **Config:** optional `tools` object in `config.json`, with defaults when missing:
+  ```json
+  "tools": {
+    "diff":     "git difftool --dir-diff --no-prompt",
+    "commit":   "git gui",
+    "editor":   "code",
+    "terminal": "open -a Ghostty"
+  }
+  ```
+- **Implementation:** each action is a detached process (`QProcess::startDetached`)
+  with the repo as its working directory, run from the tray/CLI and **never from the
+  daemon**, which stays a small state tracker so a hung pull can't stall a hook.
+- **PATH gotcha:** launchd/the desktop session start the tray with a minimal PATH
+  (`/usr/bin:/bin:/usr/sbin:/sbin`), so `bcomp`, `code`, etc. in `/usr/local/bin` or
+  `/opt/homebrew/bin` won't be found. The tray must prepend those (and
+  `~/.local/bin`) before launching, or the config must use full paths.
+- **AI, later:** suggested commit messages from the staged diff (filled into the
+  commit UI, never auto-committed), and a "what's pending here?" summary. These run
+  on the **local** repo only. Never publish diffs or filenames to the rendezvous
+  just to feed AI, because that breaks the privacy model (blobs carry counts only).
+- **Suggested first slice:** View changes + Commit… (`git gui`), since those cover
+  the review-before-commit concern.
+
 ## Current config
 
 Mac config lives at `~/.config/lockstep/config.json`. Example:
