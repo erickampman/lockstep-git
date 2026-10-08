@@ -7,6 +7,9 @@ namespace lockstep {
 
 struct Config {
     std::vector<std::string> repos;  // absolute, tilde-expanded repo paths
+    std::string machine;             // this machine's identity (default: hostname)
+    std::string rendezvous_dir;      // file-backend rendezvous dir (slice 3 interim)
+    std::string key_path;            // shared AEAD key file (tilde-expanded)
 };
 
 // Path to the config file. Honors $LOCKSTEP_CONFIG, else

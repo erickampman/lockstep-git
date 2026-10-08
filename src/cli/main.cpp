@@ -7,14 +7,19 @@
 // Everything here is IPC + formatting; the daemon holds the state.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
 
+#include "config.h"
+#include "crypto.h"
 #include "ipc.h"
 #include "paths.h"
+#include "subprocess.h"
 
 using nlohmann::json;
 
@@ -25,9 +30,29 @@ int usage(const char* argv0) {
                  "usage: %s <command>\n"
                  "  status    summary of watched repos / both machines\n"
                  "  verdict   exit 0 if clear to commit, 1 if blocked\n"
-                 "  ping      check the daemon is running\n",
+                 "  ping      check the daemon is running\n"
+                 "  keygen    generate the shared rendezvous key (once per pair)\n",
                  argv0);
     return 2;
+}
+
+// Resolve the shared-key path the same way the daemon does:
+// $LOCKSTEP_KEY > sibling "key" of the config file.
+std::string key_path() {
+    if (const char* e = std::getenv("LOCKSTEP_KEY"); e && *e) return e;
+    return (std::filesystem::path(lockstep::config_path()).parent_path() / "key")
+        .string();
+}
+
+// Logical name of the git repo containing the current directory, for narrowing
+// the verdict to the committing repo. Empty if we're not in a repo.
+std::string current_repo_name() {
+    lockstep::CmdResult r = lockstep::run({"git", "rev-parse", "--show-toplevel"});
+    if (!r.spawned || r.exit_code != 0) return "";
+    std::string top = r.out;
+    while (!top.empty() && (top.back() == '\n' || top.back() == '\r')) top.pop_back();
+    if (top.empty()) return "";
+    return std::filesystem::path(top).filename().string();
 }
 
 // Send one command to the daemon, print a transport error if unreachable.
@@ -96,10 +121,18 @@ int cmd_status() {
 }
 
 int cmd_verdict() {
-    auto reply = ask(lockstep::ipc::kCmdVerdict);
-    // Fail open on transport error is a policy decision for a later slice; for
-    // now an unreachable daemon is a hard error so it's never silently ignored.
-    if (!reply) return 1;
+    json req = {{"cmd", lockstep::ipc::kCmdVerdict}};
+    if (std::string repo = current_repo_name(); !repo.empty()) req["repo"] = repo;
+
+    std::string err;
+    auto reply = lockstep::ipc::request(lockstep::socket_path(), req, &err);
+    if (!reply) {
+        // An unreachable daemon is a hard error (exit 1) so a missing guard is
+        // never silently ignored at the one moment it's supposed to speak up.
+        std::fprintf(stderr, "lockstep: cannot reach daemon: %s\n", err.c_str());
+        std::fprintf(stderr, "  (is lockstepd running?)\n");
+        return 1;
+    }
     bool clear = reply->value("clear", false);
     std::string msg = reply->value("message", clear ? "clear" : "blocked");
     if (clear) {
@@ -108,6 +141,33 @@ int cmd_verdict() {
     }
     std::fprintf(stderr, "%s\n", msg.c_str());
     return 1;
+}
+
+int cmd_keygen() {
+    if (!lockstep::crypto::init()) {
+        std::fprintf(stderr, "lockstep: crypto init failed\n");
+        return 1;
+    }
+    std::string path = key_path();
+    if (std::filesystem::exists(path)) {
+        std::fprintf(stderr,
+                     "lockstep: key already exists at %s\n"
+                     "  refusing to overwrite (delete it first to regenerate)\n",
+                     path.c_str());
+        return 1;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(
+        std::filesystem::path(path).parent_path(), ec);
+
+    std::string err;
+    if (!lockstep::crypto::save_key(path, lockstep::crypto::generate_key(), &err)) {
+        std::fprintf(stderr, "lockstep: %s\n", err.c_str());
+        return 1;
+    }
+    std::printf("wrote shared key to %s (mode 0600)\n", path.c_str());
+    std::printf("copy this file out of band to the other machine's same path.\n");
+    return 0;
 }
 
 }  // namespace
@@ -119,6 +179,7 @@ int main(int argc, char** argv) {
     if (cmd == "ping") return cmd_ping();
     if (cmd == "status") return cmd_status();
     if (cmd == "verdict") return cmd_verdict();
+    if (cmd == "keygen") return cmd_keygen();
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { usage(argv[0]); return 0; }
 
     std::fprintf(stderr, "lockstep: unknown command '%s'\n", cmd.c_str());

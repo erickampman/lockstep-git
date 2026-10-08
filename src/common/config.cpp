@@ -54,6 +54,15 @@ Config load_config(std::string* error) {
             if (r.is_string()) cfg.repos.push_back(expand_tilde(r.get<std::string>()));
         }
     }
+    if (auto it = json.find("machine"); it != json.end() && it->is_string()) {
+        cfg.machine = it->get<std::string>();
+    }
+    if (auto it = json.find("rendezvous_dir"); it != json.end() && it->is_string()) {
+        cfg.rendezvous_dir = expand_tilde(it->get<std::string>());
+    }
+    if (auto it = json.find("key_path"); it != json.end() && it->is_string()) {
+        cfg.key_path = expand_tilde(it->get<std::string>());
+    }
     return cfg;
 }
 

@@ -11,6 +11,7 @@
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
 #include <string>
 
 #include <sys/socket.h>
@@ -18,10 +19,13 @@
 
 #include <nlohmann/json.hpp>
 
+#include "blob.h"
 #include "config.h"
+#include "crypto.h"
 #include "git.h"
 #include "ipc.h"
 #include "paths.h"
+#include "rendezvous.h"
 
 using nlohmann::json;
 
@@ -100,6 +104,123 @@ LocalScan scan_local() {
     return scan;
 }
 
+std::string env_or_empty(const char* name) {
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+}
+
+// Shared key path: $LOCKSTEP_KEY > config key_path > sibling "key" of config.json.
+std::string resolve_key_path(const lockstep::Config& cfg) {
+    if (std::string e = env_or_empty("LOCKSTEP_KEY"); !e.empty()) return e;
+    if (!cfg.key_path.empty()) return cfg.key_path;
+    std::filesystem::path cfgp = lockstep::config_path();
+    return (cfgp.parent_path() / "key").string();
+}
+
+std::string resolve_rendezvous_dir(const lockstep::Config& cfg) {
+    if (std::string e = env_or_empty("LOCKSTEP_RENDEZVOUS_DIR"); !e.empty()) return e;
+    return cfg.rendezvous_dir;
+}
+
+std::string human_age(int64_t ts) {
+    int64_t secs = static_cast<int64_t>(std::time(nullptr)) - ts;
+    if (secs < 0) secs = 0;
+    if (secs < 90) return std::to_string(secs) + "s ago";
+    if (secs < 90 * 60) return std::to_string(secs / 60) + "m ago";
+    if (secs < 48 * 3600) return std::to_string(secs / 3600) + "h ago";
+    return std::to_string(secs / 86400) + "d ago";
+}
+
+// Publish this machine's current state to the rendezvous (best effort).
+void publish_self(const lockstep::Config& cfg, const lockstep::crypto::Key& key,
+                  lockstep::Rendezvous& rv) {
+    std::string self = lockstep::machine_id(cfg);
+    std::string plain = lockstep::to_json(lockstep::gather(cfg)).dump();
+    auto enc = lockstep::crypto::encrypt(key, plain);
+    if (!enc) return;
+    std::string err;
+    if (!rv.publish(self, *enc, &err))
+        log_line("warn", "publish failed: " + err);
+}
+
+// Decide whether committing here is clear, given the other machine(s)' state.
+// Policy: fail OPEN (clear, with a note) when the rendezvous/key isn't set up or
+// can't be read — a dev tool must not block real work over its own plumbing.
+// Block only on a definite "other machine has pending work" signal. `repo_filter`
+// (optional) restricts the check to one repo name (the committing repo).
+json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter) {
+    std::string key_path = resolve_key_path(cfg);
+    std::string rv_dir = resolve_rendezvous_dir(cfg);
+
+    if (rv_dir.empty()) {
+        return {{"ok", true}, {"clear", true},
+                {"message", "clear (rendezvous not configured)"}};
+    }
+    std::string kerr;
+    auto key = lockstep::crypto::load_key(key_path, &kerr);
+    if (!key) {
+        return {{"ok", true}, {"clear", true},
+                {"message", "clear (no shared key: " + kerr + ")"}};
+    }
+
+    lockstep::FileRendezvous rv(rv_dir);
+    publish_self(cfg, *key, rv);  // keep our slot fresh
+
+    std::string ferr;
+    auto others = rv.fetch_others(lockstep::machine_id(cfg), &ferr);
+    if (!others) {
+        return {{"ok", true}, {"clear", true},
+                {"message", "clear (rendezvous unreadable: " + ferr + ")"}};
+    }
+
+    json blockers = json::array();
+    int undecryptable = 0;
+    for (const auto& [machine, enc] : *others) {
+        auto plain = lockstep::crypto::decrypt(*key, enc);
+        if (!plain) {
+            ++undecryptable;
+            log_line("warn", "could not decrypt blob from " + machine +
+                                 " (wrong key or tampered)");
+            continue;
+        }
+        auto parsed = nlohmann::json::parse(*plain, nullptr, false);
+        if (parsed.is_discarded()) continue;
+        auto b = lockstep::blob_from_json(parsed);
+        if (!b) continue;
+
+        for (const auto& r : b->repos) {
+            if (!repo_filter.empty() && r.name != repo_filter) continue;
+            if (r.clean) continue;
+            std::string what;
+            if (r.dirty > 0) what += std::to_string(r.dirty) + " uncommitted";
+            if (r.ahead > 0) {
+                if (!what.empty()) what += ", ";
+                what += std::to_string(r.ahead) + " unpushed";
+            }
+            blockers.push_back(
+                {{"machine", b->machine}, {"repo", r.name}, {"branch", r.branch},
+                 {"detail", what}, {"as_of", human_age(b->timestamp)}});
+        }
+    }
+
+    if (blockers.empty()) {
+        std::string msg = "clear (other machine has no pending work)";
+        if (undecryptable > 0)
+            msg = "clear, BUT could not decrypt " + std::to_string(undecryptable) +
+                  " blob(s) — key mismatch between machines? guard is not protecting"
+                  " those.";
+        return {{"ok", true}, {"clear", true}, {"message", msg}};
+    }
+    // Human one-liner for the first blocker; full list in `blockers`.
+    const auto& b0 = blockers.front();
+    std::string msg = "\xe2\x9b\x94 " + b0.value("machine", "?") + " has " +
+                      b0.value("detail", "pending work") + " on " +
+                      b0.value("repo", "?") + " (" + b0.value("as_of", "") +
+                      "). Pull or resolve before committing here.";
+    return {{"ok", true}, {"clear", false}, {"message", msg},
+            {"blockers", std::move(blockers)}};
+}
+
 // Build the reply for one request.
 json handle(const json& req) {
     std::string cmd = req.value("cmd", "");
@@ -108,13 +229,10 @@ json handle(const json& req) {
         return {{"ok", true}, {"pong", true}};
     }
     if (cmd == lockstep::ipc::kCmdVerdict) {
-        // Verdict is about the OTHER machine's pending work, which requires the
-        // GitHub rendezvous (slice 3). Until that exists there's no remote state
-        // to block on, so we stay clear. Local dirty state is the user's own and
-        // never blocks their commit.
-        return {{"ok", true},
-                {"clear", true},
-                {"message", "clear (no other-machine state yet)"}};
+        // Verdict is about the OTHER machine's pending work. The committing repo
+        // (if the hook sends it) narrows the check to that repo.
+        lockstep::Config cfg = lockstep::load_config();
+        return decide_verdict(cfg, req.value("repo", ""));
     }
     if (cmd == lockstep::ipc::kCmdStatus) {
         LocalScan scan = scan_local();
@@ -141,6 +259,11 @@ void serve_one(int client_fd) {
 int main() {
     // Line-buffer stderr so supervisors capture logs promptly.
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
+
+    if (!lockstep::crypto::init()) {
+        log_line("error", "libsodium init failed");
+        return 1;
+    }
 
     install_handler(SIGTERM, on_signal);
     install_handler(SIGINT, on_signal);

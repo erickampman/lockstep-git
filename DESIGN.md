@@ -243,18 +243,56 @@ daemon down → clear error + exit 1; hook relays exit code.
 Verified against synthetic repos: clean/up-to-date, dirty, ahead-N, no-upstream,
 non-repo dir, and missing path all report correctly; empty config → friendly notice.
 
-**Deferred deliberately (not yet built):** Qt tray, FSEvents (push-based watching;
-`status` currently computes on demand per request), the GitHub rendezvous (decision A
-metadata blob) + libsodium AEAD, LaunchAgent plist + systemd user unit, `pre-push`
-hook, `lockstep install` subcommand, `lockstep why`.
+**Slice 3 (core) — rendezvous crypto/blob + real blocking verdict — DONE (2026-10-08).**
+Built and tested fully offline via a filesystem rendezvous backend standing in for
+the GitHub repo:
+- `src/common/crypto.{h,cpp}` — libsodium XChaCha20-Poly1305 AEAD; random nonce
+  prepended per message; shared key as 0600 hex file; generate/load/save. ~as the
+  security model specified (symmetric, out-of-band key, no asymmetric, no MITM).
+- `src/common/blob.{h,cpp}` — per-machine state blob (machine id, timestamp, per-repo
+  briefs). **Metadata-only: counts + branch + ahead/behind, NOT filenames.** Repos
+  matched across machines by path **basename** (`~/dev/foo` ↔ `~/src/foo`).
+- `src/common/rendezvous.h` + `rendezvous_file.cpp` — `Rendezvous` interface (publish
+  my slot / fetch others'); `FileRendezvous` = one `<machine>.blob` per machine under
+  a dir, atomic write-then-rename. The GitHub backend will layer commit/push/pull over
+  this same shape.
+- `lockstepd` verdict now: publish self, fetch others, decrypt, and **block** if the
+  other machine has uncommitted/unpushed work in the committing repo. Message matches
+  the doc's example ("⛔ linux has 2 uncommitted on proj (0s ago). Pull or resolve…").
+- **Policy — fail OPEN:** unconfigured rendezvous/key, or an unreadable/undecryptable
+  blob, never blocks real work; it returns clear. A key mismatch is surfaced in the
+  clear message ("could not decrypt N blob(s) — key mismatch?") rather than silently
+  disabling the guard. Only a definite "other machine is dirty" signal blocks.
+- `lockstep keygen` writes the shared key (0600) and tells you to copy it out of band.
+  `lockstep verdict` auto-detects the committing repo (git toplevel basename) and sends
+  it so the check is scoped to that project.
+- Config gained `machine`, `rendezvous_dir`, `key_path`; env overrides
+  `$LOCKSTEP_KEY`, `$LOCKSTEP_RENDEZVOUS_DIR`.
+
+Verified two-machine scenarios (mac+linux sharing a dir+key): both clean → clear;
+linux dirty → mac blocks with the right message; linux commits+pushes → mac clear
+again; wrong key on the daemon → fail-open clear + warn.
+
+**Deferred deliberately (not yet built):** the **GitHub-private-repo rendezvous
+backend** (commit/push/pull the per-machine blob files over `FileRendezvous`'s shape)
+— the one slice-3 piece that needs network + your setup; a **background tick loop**
+(daemon currently publishes/fetches on demand during verdict/status, not periodically);
+Qt tray; FSEvents push watching; LaunchAgent plist + systemd user unit; `pre-push`
+hook; `lockstep install` subcommand; `lockstep why`.
 
 ## Suggested next steps on the Mac
 
-1. ~~**Repo watching + real verdict.**~~ DONE (slice 2, above).
-2. **GitHub rendezvous (decision A).** Set up the private rendezvous (private repo or
-   secret gist); generate + copy the shared key out of band; daemon publishes this
-   machine's metadata JSON blob and caches the other machine's, gated by the
-   libsodium AEAD layer. Now `verdict` can actually block.
-3. `lockstep install` subcommand (writes the LaunchAgent plist / systemd user unit
-   and installs the hooks) + the `pre-push` hook.
-4. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
+1. ~~**Repo watching + real verdict.**~~ DONE (slice 2).
+2. ~~**Rendezvous crypto/blob + blocking verdict.**~~ DONE (slice 3 core, offline).
+3. **GitHub-private-repo backend (needs network + your setup).** Create a *private*
+   `lockstep-rendezvous` repo (separate from this public one); `lockstep keygen` then
+   copy `~/.config/lockstep/key` to the Linux box out of band. Implement a
+   `GitHubRendezvous : Rendezvous` that clones/pulls the private repo, writes
+   `<machine>.blob`, commits + pushes on publish, and pulls on fetch — same shape as
+   `FileRendezvous`, so the verdict logic is unchanged. Auth via the `gh` CLI or a
+   token. This is the step that makes it work across the real two machines.
+4. **Background tick loop** in the daemon: periodically publish + fetch (FSEvents on
+   mac, fsmonitor/poll on linux) so state is fresh without waiting for a verdict.
+5. `lockstep install` subcommand (LaunchAgent plist / systemd user unit + hooks) +
+   the `pre-push` hook.
+6. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
