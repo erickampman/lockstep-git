@@ -61,6 +61,13 @@ QString textFor(Health h) {
     }
 }
 
+// The brand mark, loaded once from the compiled-in resource.
+const QPixmap& brandBase() {
+    static QPixmap pm(QStringLiteral(":/lockstep.png"));
+    return pm;
+}
+
+// Plain colored dot — fallback when the brand image is unavailable.
 QIcon dotIcon(Health h) {
     QPixmap pm(22, 22);
     pm.fill(Qt::transparent);
@@ -71,6 +78,34 @@ QIcon dotIcon(Health h) {
     p.drawEllipse(3, 3, 16, 16);
     p.end();
     return QIcon(pm);
+}
+
+// The brand mark with a status-colored dot badged into the bottom-right corner
+// (white-ringed for contrast against the red artwork). Falls back to the plain
+// dot if the resource didn't load.
+QIcon trayIcon(Health h) {
+    const QPixmap& base = brandBase();
+    if (base.isNull()) return dotIcon(h);
+
+    const int S = 44;  // rendered large; the menubar downscales it crisply
+    QPixmap canvas(S, S);
+    canvas.fill(Qt::transparent);
+    QPainter p(&canvas);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+
+    QPixmap art = base.scaled(S, S, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    p.drawPixmap((S - art.width()) / 2, (S - art.height()) / 2, art);
+
+    const qreal rr = S * 0.26;                 // badge radius
+    const QPointF c(S - rr - 1.0, S - rr - 1.0);  // bottom-right
+    p.setPen(Qt::NoPen);
+    p.setBrush(Qt::white);
+    p.drawEllipse(c, rr, rr);                  // halo
+    p.setBrush(colorFor(h));
+    p.drawEllipse(c, rr * 0.72, rr * 0.72);    // status dot
+    p.end();
+    return QIcon(canvas);
 }
 
 // Locate the lockstep CLI: installed symlink, then beside us, then PATH.
@@ -171,7 +206,7 @@ struct Tray {
         menu.clear();
 
         if (!reply) {
-            icon.setIcon(dotIcon(Health::Unknown));
+            icon.setIcon(trayIcon(Health::Unknown));
             icon.setToolTip(QStringLiteral("lockstep — daemon not running"));
             addInfo(QStringLiteral("lockstep — daemon not running"));
             menu.addSeparator();
@@ -261,7 +296,7 @@ struct Tray {
         menu.addAction(QStringLiteral("Refresh now"), [this] { refresh(); });
         menu.addAction(QStringLiteral("Quit"), [] { qApp->quit(); });
 
-        icon.setIcon(dotIcon(h));
+        icon.setIcon(trayIcon(h));
         icon.setToolTip(QStringLiteral("lockstep — ") + textFor(h));
         maybeNotify(h, detail.isEmpty() ? textFor(h) : detail);
         last = h;
@@ -281,7 +316,7 @@ int main(int argc, char** argv) {
     }
 
     static Tray tray;  // constructed after QApplication; lives for the app's life
-    tray.icon.setIcon(dotIcon(Health::Unknown));
+    tray.icon.setIcon(trayIcon(Health::Unknown));
     tray.icon.setContextMenu(&tray.menu);
     tray.icon.setToolTip(QStringLiteral("lockstep"));
     tray.icon.show();

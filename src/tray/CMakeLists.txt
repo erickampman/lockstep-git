@@ -11,6 +11,7 @@ if(NOT Qt6_FOUND)
 endif()
 
 set(CMAKE_AUTOMOC ON)
-add_executable(lockstep-tray main.cpp)
+set(CMAKE_AUTORCC ON)  # compiles resources.qrc (the brand icon) into the binary
+add_executable(lockstep-tray main.cpp resources.qrc)
 target_link_libraries(lockstep-tray PRIVATE lockstep_common Qt6::Widgets)
 message(STATUS "lockstep-tray enabled (Qt ${Qt6_VERSION})")
