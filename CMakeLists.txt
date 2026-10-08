@@ -40,6 +40,7 @@ FetchContent_MakeAvailable(nlohmann_json)
 add_subdirectory(src/common)
 add_subdirectory(src/daemon)
 add_subdirectory(src/cli)
+add_subdirectory(src/tray)  # optional; skipped if Qt6 isn't found
 
 # --- Summary ---------------------------------------------------------------
 
