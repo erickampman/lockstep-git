@@ -44,6 +44,8 @@ itself) does three things and is safe to re-run:
    (honoring `core.hooksPath`/worktrees). It only overwrites hooks that are lockstep's
    own; a foreign hook is left untouched.
 3. **Service** — writes the LaunchAgent plist and (re)starts the daemon.
+4. **Tray** (only if `lockstep-tray` was built — see below) — symlinks it, writes a
+   second LaunchAgent (`com.ericlkampman.lockstep.tray`), and starts the menubar app.
 
 `lockstep uninstall` reverses 1–3 (stops+removes the agent, removes lockstep's hooks,
 removes the symlinks) and **leaves your config and key in place**.
@@ -120,6 +122,27 @@ Drive) is silently blocked until you grant the daemon Full Disk Access. The curr
 daemon uses a timer, not FSEvents, so this doesn't bite yet — but keep watched repos
 under unprotected paths (e.g. `~/Dev-Tools`, `~/Dev-Common`, `~/Dev-MIDI`) and it stays
 a non-issue. Relevant if/when event-driven watching lands.
+
+## The menubar app (lockstep-tray)
+
+Optional Qt UI. It's **not built by default** — enable it by configuring with Qt:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake --build build
+./build/bin/lockstep install    # now also installs + starts the tray agent
+```
+
+- A colored menubar dot: 🟢 all clear · 🟡 heads-up (other machine busy elsewhere,
+  stale sync, or key mismatch) · 🔴 blocked (another machine has pending work in a repo
+  this machine watches). Click it for both machines' per-repo state, **Add repo…**
+  (folder picker) and **Remove repo**.
+- **Menubar-only, no Dock icon** — it sets the macOS activation policy to "accessory"
+  at startup (no `.app` bundle needed).
+- Autostarts at login via its LaunchAgent, which uses `KeepAlive` only on crash — so
+  choosing **Quit** from its menu stops it until next login (or `launchctl kickstart`).
+- Logs: `~/Library/Logs/lockstep-tray.log`. After a rebuild, refresh it with
+  `launchctl kickstart -k gui/$(id -u)/com.ericlkampman.lockstep.tray`.
 
 ## Everyday checks
 

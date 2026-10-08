@@ -332,11 +332,16 @@ fork()-in-a-thread hazard from shelling out to git.
   (folder picker) + "Remove repo" that shell out to `add`/`remove`. Enable with
   `-DCMAKE_PREFIX_PATH="$(brew --prefix qt)"`.
 
-**Deferred deliberately (not yet built):** tray **autostart** (not yet wired into
-`lockstep install` — launched by hand for now) and macOS **LSUIElement** bundling (the
-bare binary shows a Dock icon; a tiny `.app` with `LSUIElement=true` makes it
-menubar-only); FSEvents/fsmonitor push watching (tick is a plain timer — event-driven
-would cut the staleness window); `lockstep why`.
+**Slice 5 polish — DONE (2026-10-08):** tray **autostart** is wired into `lockstep
+install` (a second macOS LaunchAgent `…​.tray`, `KeepAlive` on-crash-only so the menu's
+Quit sticks; Linux prints a note since tray autostart is desktop-specific), and the
+**Dock icon** is gone — the tray sets the macOS activation policy to "accessory" at
+startup via the ObjC runtime (no `.app`/LSUIElement bundle needed). `uninstall` tears
+both down.
+
+**Deferred deliberately (not yet built):** FSEvents/fsmonitor push watching (tick is a
+plain timer — event-driven would cut the staleness window); `lockstep why`; tray
+autostart on Linux (desktop-environment-specific).
 
 ## Suggested next steps on the Mac
 

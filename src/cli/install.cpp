@@ -196,6 +196,70 @@ const char* kLogsHint = "logs: ~/Library/Logs/lockstep.log";
 const char* kRestartHint =
     "after a rebuild: launchctl kickstart -k gui/$(id -u)/com.ericlkampman.lockstep";
 
+// --- Tray LaunchAgent (separate from the daemon: it needs the GUI session) --
+
+constexpr const char* kTrayLabel = "com.ericlkampman.lockstep.tray";
+
+fs::path tray_service_file() {
+    return fs::path(home()) / "Library" / "LaunchAgents" /
+           (std::string(kTrayLabel) + ".plist");
+}
+
+bool tray_loaded() {
+    return ok(run({"launchctl", "print", gui_domain() + "/" + kTrayLabel}));
+}
+
+std::string tray_service_contents() {
+    std::string bin = (bin_dir() / "lockstep-tray").string();
+    std::string log = (fs::path(home()) / "Library" / "Logs" / "lockstep-tray.log").string();
+    // KeepAlive only on crash (SuccessfulExit false), so the menu's Quit sticks.
+    // PATH includes Homebrew so `lockstep add` (which it spawns) finds git.
+    return R"(<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>)" + std::string(kTrayLabel) + R"(</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>)" + bin + R"(</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>)" + log + R"(</string>
+    <key>StandardErrorPath</key>
+    <string>)" + log + R"(</string>
+</dict>
+</plist>
+)";
+}
+
+bool tray_start(std::string* err) {
+    if (tray_loaded()) run({"launchctl", "bootout", gui_domain() + "/" + kTrayLabel});
+    for (int i = 0; i < 10; ++i) {
+        if (ok(run({"launchctl", "bootstrap", gui_domain(), tray_service_file().string()})))
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+    *err = "launchctl bootstrap (tray) failed";
+    return false;
+}
+
+void tray_stop() {
+    if (tray_loaded()) run({"launchctl", "bootout", gui_domain() + "/" + kTrayLabel});
+}
+
 #else  // Linux: systemd --user
 
 fs::path service_file() {
@@ -257,6 +321,27 @@ fs::perms hook_perms() {
 fs::perms config_perms() {
     return fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read |
            fs::perms::others_read;
+}
+
+// Symlink ~/.local/bin/<name> -> <srcdir>/<name>, printing the result. Leaves a
+// real (non-symlink) file in place rather than clobbering it.
+bool link_binary(const fs::path& srcdir, const char* name) {
+    fs::path link = bin_dir() / name, target = srcdir / name;
+    std::error_code ec;
+    fs::create_directories(bin_dir(), ec);
+    auto st = fs::symlink_status(link, ec);
+    if (fs::exists(st) && !fs::is_symlink(st)) {
+        std::printf("  ! %s exists and isn't a symlink; left alone\n", pretty(link).c_str());
+        return false;
+    }
+    fs::remove(link, ec);
+    fs::create_symlink(target, link, ec);
+    if (ec) {
+        std::printf("  ! %s: %s\n", pretty(link).c_str(), ec.message().c_str());
+        return false;
+    }
+    std::printf("  %s -> %s\n", pretty(link).c_str(), pretty(target).c_str());
+    return true;
 }
 
 // The path string of a "repos" entry — a bare string or {"path": ...}.
@@ -446,6 +531,37 @@ int cmd_install() {
     std::printf("  daemon running (%s)\n", kLogsHint);
     std::printf("  %s\n", kRestartHint);
 
+    // 4. Tray (optional; only if the Qt build produced it).
+    fs::path tray_bin = *dir / "lockstep-tray";
+    std::printf("tray\n");
+    if (!fs::exists(tray_bin)) {
+        std::printf("  (not built — reconfigure with "
+                    "-DCMAKE_PREFIX_PATH=\"$(brew --prefix qt)\" to enable the menubar app)\n");
+    } else {
+#ifdef __APPLE__
+        link_binary(*dir, "lockstep-tray");
+        if (!write_file(tray_service_file(), tray_service_contents(),
+                        fs::perms::owner_read | fs::perms::owner_write |
+                            fs::perms::group_read | fs::perms::others_read)) {
+            std::printf("  ! could not write %s\n", pretty(tray_service_file()).c_str());
+            ++failures;
+        } else {
+            std::printf("  wrote %s\n", pretty(tray_service_file()).c_str());
+            std::string terr;
+            if (!tray_start(&terr)) {
+                std::printf("  ! %s\n", terr.c_str());
+                ++failures;
+            } else {
+                std::printf("  menubar app running (logs: ~/Library/Logs/lockstep-tray.log)\n");
+            }
+        }
+#else
+        link_binary(*dir, "lockstep-tray");
+        std::printf("  built, but autostart isn't managed on Linux — launch "
+                    "lockstep-tray from your desktop session\n");
+#endif
+    }
+
     // The hooks fall back to ~/.local/bin, but interactive use wants it on PATH.
     const char* path = std::getenv("PATH");
     if (!path || (":" + std::string(path) + ":").find(":" + bin_dir().string() + ":") ==
@@ -463,7 +579,11 @@ int cmd_uninstall() {
         std::printf("  stopped and removed %s\n", pretty(service_file()).c_str());
     else
         std::printf("  (no %s)\n", pretty(service_file()).c_str());
-#ifndef __APPLE__
+#ifdef __APPLE__
+    tray_stop();
+    if (fs::remove(tray_service_file(), ec))
+        std::printf("  stopped and removed %s\n", pretty(tray_service_file()).c_str());
+#else
     run({"systemctl", "--user", "daemon-reload"});
 #endif
 
@@ -486,7 +606,7 @@ int cmd_uninstall() {
     }
 
     std::printf("binaries\n");
-    for (const char* name : kBinaries) {
+    for (const char* name : {"lockstep", "lockstepd", "lockstep-tray"}) {
         fs::path link = bin_dir() / name;
         if (fs::is_symlink(fs::symlink_status(link, ec)) && fs::remove(link, ec))
             std::printf("  removed %s\n", pretty(link).c_str());

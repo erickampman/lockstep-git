@@ -26,6 +26,11 @@
 #include <set>
 #include <string>
 
+#ifdef __APPLE__
+#include <objc/message.h>
+#include <objc/runtime.h>
+#endif
+
 #include <nlohmann/json.hpp>
 
 #include "config.h"  // lockstep::repo_name
@@ -97,6 +102,21 @@ QString describeRepo(const json& r) {
 
 QString mark(bool clean) {
     return clean ? QString::fromUtf8("✓ ") : QString::fromUtf8("● ");  // ✓ / ●
+}
+
+// macOS: make this a menubar-only "accessory" app — no Dock icon, no Cmd-Tab
+// entry. Equivalent to Info.plist LSUIElement, but set at runtime so the plain
+// binary needs no .app bundle. Must run after QApplication creates NSApplication.
+void makeMenubarOnly() {
+#ifdef __APPLE__
+    using MsgCls = id (*)(Class, SEL);
+    using MsgPolicy = void (*)(id, SEL, long);
+    id app = reinterpret_cast<MsgCls>(objc_msgSend)(
+        objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
+    if (app)  // NSApplicationActivationPolicyAccessory == 1
+        reinterpret_cast<MsgPolicy>(objc_msgSend)(
+            app, sel_registerName("setActivationPolicy:"), 1);
+#endif
 }
 
 struct Tray {
@@ -253,6 +273,7 @@ struct Tray {
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);  // tray-only: no window closing should quit us
+    makeMenubarOnly();                      // macOS: no Dock icon
 
     if (!QSystemTrayIcon::isSystemTrayAvailable()) {
         qWarning("lockstep-tray: no system tray available on this session");
