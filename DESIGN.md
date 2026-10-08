@@ -3,6 +3,8 @@
 > Handoff doc for continuing this side project. Captures every decision reached in
 > the exploratory + build sessions so a fresh Claude (or me) can pick up cold.
 >
+> **Setting it up yourself?** Start with the [README](README.md).
+>
 > **Operating it?** [MACOS.md](MACOS.md) (build, install, launchd daemon lifecycle)
 > and [LINUX_BRINGUP.md](LINUX_BRINGUP.md) (Linux cold-start) are the operational
 > guides. This doc is the full rationale and the slice-by-slice progress log.
@@ -138,10 +140,10 @@ a tiny JSON blob).
   last-published state. (Details in [LINUX_BRINGUP.md](LINUX_BRINGUP.md).)
 - Because the daemon is a plain foreground process, launchd (mac) and systemd-user
   (linux) both just supervise it — **zero platform-specific code in the daemon.**
-- The **Linux tray is not autostarted by `install`** (unlike macOS, where it gets its
-  own LaunchAgent) — tray autostart is desktop-environment-specific. Add
-  `lockstep-tray` to your DE's autostart if you want it there; it needs a graphical
-  session.
+- The **Linux tray is autostarted by the desktop session**, not systemd: `install`
+  writes an XDG autostart entry (`~/.config/autostart/lockstep-tray.desktop`) and, from
+  a graphical session, starts the tray right away. (macOS gets a second LaunchAgent
+  instead.)
 
 ## Naming (settled)
 
@@ -347,14 +349,13 @@ fork()-in-a-thread hazard from shelling out to git.
 
 **Slice 5 polish — DONE (2026-10-08):** tray **autostart** is wired into `lockstep
 install` (a second macOS LaunchAgent `…​.tray`, `KeepAlive` on-crash-only so the menu's
-Quit sticks; Linux prints a note since tray autostart is desktop-specific), and the
+Quit sticks; on Linux an XDG `~/.config/autostart/lockstep-tray.desktop` entry), and the
 **Dock icon** is gone — the tray sets the macOS activation policy to "accessory" at
 startup via the ObjC runtime (no `.app`/LSUIElement bundle needed). `uninstall` tears
 both down.
 
 **Deferred deliberately (not yet built):** FSEvents/fsmonitor push watching (tick is a
-plain timer — event-driven would cut the staleness window); `lockstep why`; tray
-autostart on Linux (desktop-environment-specific).
+plain timer — event-driven would cut the staleness window); `lockstep why`.
 
 ## Suggested next steps on the Mac
 
@@ -363,8 +364,8 @@ autostart on Linux (desktop-environment-specific).
 3. ~~**GitHub-private-repo backend.**~~ DONE (slice 3 GitHub backend).
 4. ~~**Background tick loop.**~~ DONE (slice 4) — timer-based; FSEvents/fsmonitor
    event-driven watching is a later refinement to cut the staleness window.
-5. ~~**`lockstep install`** + `pre-push` hook.~~ DONE on Linux (2026-10-08); the
-   LaunchAgent half is written but **untested on the Mac**. Idempotent:
+5. ~~**`lockstep install`** + `pre-push` hook.~~ DONE on both Linux (systemd `--user`)
+   and the Mac (LaunchAgent) (2026-10-08). Idempotent:
    - links `~/.local/bin/{lockstep,lockstepd}` → the build output (rebuild + restart
      the service picks up new code);
    - writes the hook into every watched repo as `pre-commit` **and** `pre-push` (one
@@ -377,8 +378,8 @@ autostart on Linux (desktop-environment-specific).
    - `lockstep uninstall` reverses it all, keeping config + key.
    Pre-push runs the same verdict as pre-commit (blocks on the other machine's
    pending work on this repo, prompts on dependency warnings).
-6. ~~Qt tray + `add`/`remove`.~~ DONE (slice 5). Remaining tray polish: autostart via
-   `install`, and macOS `.app`/LSUIElement bundling so it's menubar-only.
+6. ~~Qt tray + `add`/`remove`.~~ DONE (slice 5), including autostart via `install`
+   and menubar-only on macOS (activation policy, no `.app` bundle needed).
 
 ## Dependency-aware watching (Eric, 2026-10-08) — BUILT
 

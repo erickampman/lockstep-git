@@ -1,5 +1,7 @@
 #include "install.h"
 
+#include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -260,6 +262,10 @@ void tray_stop() {
     if (tray_loaded()) run({"launchctl", "bootout", gui_domain() + "/" + kTrayLabel});
 }
 
+const char* kTrayRunningNote = "menubar app running (logs: ~/Library/Logs/lockstep-tray.log)";
+const char* kTrayBuildHint =
+    "reconfigure with -DCMAKE_PREFIX_PATH=\"$(brew --prefix qt)\" to enable the menubar app";
+
 #else  // Linux: systemd --user
 
 fs::path service_file() {
@@ -309,6 +315,62 @@ void service_stop() {
 
 const char* kLogsHint = "logs: journalctl --user -u lockstep";
 const char* kRestartHint = "after a rebuild: systemctl --user restart lockstep";
+
+// --- Tray autostart (XDG autostart entry: the desktop session launches it) --
+
+fs::path tray_service_file() {
+    const char* xdg = std::getenv("XDG_CONFIG_HOME");
+    fs::path base = (xdg && *xdg) ? fs::path(xdg) : fs::path(home()) / ".config";
+    return base / "autostart" / "lockstep-tray.desktop";
+}
+
+std::string tray_service_contents() {
+    return "[Desktop Entry]\n"
+           "Type=Application\n"
+           "Name=lockstep tray\n"
+           "Comment=lockstep-git status in the system tray\n"
+           "Exec=" + (bin_dir() / "lockstep-tray").string() + "\n"
+           "X-GNOME-Autostart-enabled=true\n";
+}
+
+void tray_stop() { run({"pkill", "-x", "lockstep-tray"}); }
+
+// (Re)start the tray now so it runs the current binary — detached into its own
+// session (double fork, stdio to /dev/null) so it outlives this command and the
+// terminal it ran in. Needs a graphical session; without one, autostart picks
+// it up at the next login.
+bool tray_start(std::string* err) {
+    if (!std::getenv("WAYLAND_DISPLAY") && !std::getenv("DISPLAY")) {
+        *err = "no graphical session here — it will start at your next desktop login";
+        return false;
+    }
+    tray_stop();
+    std::string bin = (bin_dir() / "lockstep-tray").string();
+    pid_t pid = ::fork();
+    if (pid < 0) {
+        *err = "fork failed";
+        return false;
+    }
+    if (pid == 0) {
+        ::setsid();
+        if (::fork() != 0) ::_exit(0);  // grandchild is reparented; no zombie
+        int devnull = ::open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            ::dup2(devnull, STDIN_FILENO);
+            ::dup2(devnull, STDOUT_FILENO);
+            ::dup2(devnull, STDERR_FILENO);
+        }
+        ::execl(bin.c_str(), bin.c_str(), static_cast<char*>(nullptr));
+        ::_exit(127);
+    }
+    ::waitpid(pid, nullptr, 0);
+    return true;
+}
+
+const char* kTrayRunningNote = "tray running (starts at each desktop login)";
+const char* kTrayBuildHint =
+    "install Qt (sudo apt install qt6-base-dev), reconfigure, and rebuild — see "
+    "LINUX_BRINGUP.md";
 
 #endif
 
@@ -535,10 +597,8 @@ int cmd_install() {
     fs::path tray_bin = *dir / "lockstep-tray";
     std::printf("tray\n");
     if (!fs::exists(tray_bin)) {
-        std::printf("  (not built — reconfigure with "
-                    "-DCMAKE_PREFIX_PATH=\"$(brew --prefix qt)\" to enable the menubar app)\n");
+        std::printf("  (not built — %s)\n", kTrayBuildHint);
     } else {
-#ifdef __APPLE__
         link_binary(*dir, "lockstep-tray");
         if (!write_file(tray_service_file(), tray_service_contents(),
                         fs::perms::owner_read | fs::perms::owner_write |
@@ -552,14 +612,9 @@ int cmd_install() {
                 std::printf("  ! %s\n", terr.c_str());
                 ++failures;
             } else {
-                std::printf("  menubar app running (logs: ~/Library/Logs/lockstep-tray.log)\n");
+                std::printf("  %s\n", kTrayRunningNote);
             }
         }
-#else
-        link_binary(*dir, "lockstep-tray");
-        std::printf("  built, but autostart isn't managed on Linux — launch "
-                    "lockstep-tray from your desktop session\n");
-#endif
     }
 
     // The hooks fall back to ~/.local/bin, but interactive use wants it on PATH.
@@ -579,11 +634,10 @@ int cmd_uninstall() {
         std::printf("  stopped and removed %s\n", pretty(service_file()).c_str());
     else
         std::printf("  (no %s)\n", pretty(service_file()).c_str());
-#ifdef __APPLE__
     tray_stop();
     if (fs::remove(tray_service_file(), ec))
         std::printf("  stopped and removed %s\n", pretty(tray_service_file()).c_str());
-#else
+#ifndef __APPLE__
     run({"systemctl", "--user", "daemon-reload"});
 #endif
 

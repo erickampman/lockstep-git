@@ -163,9 +163,10 @@ rendezvous blob fresh. Without it, the daemon only runs while you're logged in �
 is usually fine, since the Mac still sees your last-published state (with its "as of"
 age) in the meantime. (`loginctl disable-linger "$USER"` reverses it.)
 
-The tray is not autostarted by `install` on Linux (see "Slice 5 delta") — add
-`lockstep-tray` to your desktop environment's autostart if you want it, and it needs a
-graphical session regardless of lingering.
+The tray, if built, is autostarted by the desktop session rather than systemd:
+`install` writes `~/.config/autostart/lockstep-tray.desktop` (and starts it right away
+when run from a graphical session). It needs a graphical session regardless of
+lingering.
 
 ## Slice 5 delta — repo management + optional tray
 
@@ -184,7 +185,8 @@ work in `uw-core` becomes a *warning* when you commit in `app`, not a block. Git
 submodules that point at another watched repo are detected automatically.)
 
 **Optional Qt menubar tray (`lockstep-tray`)** — a thin GUI client of the daemon: a
-status-tinted icon (green/amber/red) plus Add/Remove-repo menu items. It's **off
+"¿?" icon tinted per side (¿ = this machine, ? = the others; see MACOS.md) plus
+Add/Remove-repo menu items. It's **off
 unless Qt is found at configure time**; the core always builds without it.
 ```bash
 sudo apt install qt6-base-dev        # Debian/Ubuntu (Fedora: qt6-qtbase-devel)
@@ -192,9 +194,11 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH="$(qmake6 -query QT_INSTALL_PREFIX)"
 cmake --build build                  # now also builds build/bin/lockstep-tray
 ```
 Linux tray caveats (macOS has the cleaner story here):
-- `lockstep install` does **not** autostart the tray on Linux — it only symlinks the
-  binary and prints a note. Add `lockstep-tray` to your desktop environment's autostart
-  yourself (it needs the graphical session).
+- `lockstep install` writes an XDG autostart entry,
+  `~/.config/autostart/lockstep-tray.desktop`, so the desktop session launches the
+  tray at each login (GNOME Tweaks → Startup Applications can toggle it). Run from a
+  graphical session, install also (re)starts the tray immediately; `uninstall` stops
+  it and removes the entry.
 - The tray uses a **StatusNotifierItem**: KDE/most DEs host it natively, but **GNOME
   needs an AppIndicator extension** or the icon won't appear.
 

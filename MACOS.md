@@ -2,12 +2,15 @@
 
 > The Mac counterpart to [LINUX_BRINGUP.md](LINUX_BRINGUP.md): how to build, install,
 > and operate lockstep on macOS, with the launchd daemon lifecycle spelled out. Full
-> design rationale and the slice-by-slice log are in [DESIGN.md](DESIGN.md).
+> design rationale and the slice-by-slice log are in [DESIGN.md](DESIGN.md). Setting
+> lockstep up from scratch (rendezvous repo, key, config)? Start with the
+> [README](README.md).
 
 ## Dependencies (macOS)
 
-Same core as Linux — and the same two non-dependencies: **Qt is not needed** yet (the
-tray isn't built), and **libgit2 is not needed** (we shell out to `git`).
+Same core as Linux — and the same two non-dependencies: **Qt is not needed** for the
+core (only for the optional menubar app), and **libgit2 is not needed** (we shell out
+to `git`).
 
 - Xcode Command Line Tools (clang, C++20): `xcode-select --install`
 - CMake ≥ 3.24 and **Ninja**: `brew install cmake ninja`
@@ -27,13 +30,13 @@ cmake --build build
 generator at compiler-detection time. Ninja sidesteps it (and is faster). This is a
 Mac-only wrinkle; Linux is fine with plain Makefiles.
 
-If we ever wire up the Qt tray, Qt is already installed (`brew install qt`, 6.11.2)
-and CMake finds it with `-DCMAKE_PREFIX_PATH="$(brew --prefix qt)"`.
+For the menubar app, install Qt (`brew install qt`) and configure with
+`-DCMAKE_PREFIX_PATH="$(brew --prefix qt)"` — see "The menubar app" below.
 
 ## Install / uninstall
 
 `lockstep install` (run it from the build output so it can find `lockstepd` beside
-itself) does three things and is safe to re-run:
+itself) does the following and is safe to re-run:
 
 ```bash
 ./build/bin/lockstep install
@@ -47,8 +50,8 @@ itself) does three things and is safe to re-run:
 4. **Tray** (only if `lockstep-tray` was built — see below) — symlinks it, writes a
    second LaunchAgent (`com.ericlkampman.lockstep.tray`), and starts the menubar app.
 
-`lockstep uninstall` reverses 1–3 (stops+removes the agent, removes lockstep's hooks,
-removes the symlinks) and **leaves your config and key in place**.
+`lockstep uninstall` reverses all of it (stops+removes both agents, removes lockstep's
+hooks, removes the symlinks) and **leaves your config and key in place**.
 
 After install you'll likely see **`note: ~/.local/bin isn't on your PATH`**. The hooks
 don't care (they fall back to the `~/.local/bin` path explicitly), but to type
@@ -133,10 +136,12 @@ cmake --build build
 ./build/bin/lockstep install    # now also installs + starts the tray agent
 ```
 
-- A colored menubar dot: 🟢 all clear · 🟡 heads-up (other machine busy elsewhere,
-  stale sync, or key mismatch) · 🔴 blocked (another machine has pending work in a repo
-  this machine watches). Click it for both machines' per-repo state, **Add repo…**
-  (folder picker) and **Remove repo**.
+- A "¿?" menubar mark, tinted per side. The **¿ is this machine**: yellow when a
+  watched repo is behind its remote (pull before working) or unreadable. The **? is
+  the other machines**, worst wins: red when one has pending work in a repo this
+  machine watches; yellow when one is busy elsewhere or behind, or on a stale sync or
+  key mismatch. Click it for both machines' per-repo state, **Add repo…** (folder
+  picker) and **Remove repo**.
 - **Menubar-only, no Dock icon** — it sets the macOS activation policy to "accessory"
   at startup (no `.app` bundle needed).
 - Autostarts at login via its LaunchAgent, which uses `KeepAlive` only on crash — so
