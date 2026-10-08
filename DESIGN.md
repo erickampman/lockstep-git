@@ -224,17 +224,33 @@ The vertical spine builds and runs end-to-end on the Mac:
 Verified: daemon up → `verdict` clear/exit 0; SIGTERM → clean exit + socket removed;
 daemon down → clear error + exit 1; hook relays exit code.
 
-**Deferred deliberately (not yet built):** Qt tray, FSEvents/repo watching, the
-GitHub rendezvous (decision A metadata blob) + libsodium AEAD, LaunchAgent plist +
-systemd user unit, `pre-push` hook, `lockstep install` subcommand, `lockstep why`.
+**Slice 2 — config-driven repo watching + real local git state — DONE (2026-09-18).**
+- `src/common/config.{h,cpp}` — reads `config.json` (`{"repos": [...]}`), XDG-aware
+  path (`$LOCKSTEP_CONFIG` > `$XDG_CONFIG_HOME/lockstep` > `~/.config/lockstep`),
+  tilde-expands paths; missing file = watch nothing (not an error).
+- `src/common/subprocess.{h,cpp}` — `fork`/`execvp` capture of stdout, **no shell**
+  (paths from config never hit a shell), stderr to /dev/null.
+- `src/common/git.{h,cpp}` — `inspect(path)` shells out to git for branch, dirty
+  count (`status --porcelain`), and ahead/behind (`rev-list --count --left-right
+  @{u}...HEAD`); handles detached HEAD, no upstream, and non-repo/missing paths via
+  `RepoState::error`. `is_clean()` = no dirty + not ahead.
+- `lockstepd` `status` now scans all configured repos and returns a structured
+  `repos` array + a summary ("N watched, M with pending local work, K unreadable").
+  `lockstep status` renders a per-repo table (✓/● + branch + state).
+- `verdict` still clear-by-design: it concerns the *other* machine, which needs the
+  rendezvous (slice 3). Local dirty state is the user's own and never blocks them.
+
+Verified against synthetic repos: clean/up-to-date, dirty, ahead-N, no-upstream,
+non-repo dir, and missing path all report correctly; empty config → friendly notice.
+
+**Deferred deliberately (not yet built):** Qt tray, FSEvents (push-based watching;
+`status` currently computes on demand per request), the GitHub rendezvous (decision A
+metadata blob) + libsodium AEAD, LaunchAgent plist + systemd user unit, `pre-push`
+hook, `lockstep install` subcommand, `lockstep why`.
 
 ## Suggested next steps on the Mac
 
-1. **Repo watching + real verdict.** Teach `lockstepd` a config of watched repo
-   roots; on `verdict`/`status`, shell out to `git` (`status --porcelain`,
-   rev-list ahead/behind) to compute *this* machine's state. Wire `status` to report
-   real per-repo dirty/ahead/behind. (Verdict still "clear" until the rendezvous
-   exists — there's no other-machine state yet.)
+1. ~~**Repo watching + real verdict.**~~ DONE (slice 2, above).
 2. **GitHub rendezvous (decision A).** Set up the private rendezvous (private repo or
    secret gist); generate + copy the shared key out of band; daemon publishes this
    machine's metadata JSON blob and caches the other machine's, gated by the

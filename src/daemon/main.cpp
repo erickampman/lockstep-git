@@ -18,6 +18,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "config.h"
+#include "git.h"
 #include "ipc.h"
 #include "paths.h"
 
@@ -49,7 +51,56 @@ void log_line(const char* level, const std::string& msg) {
     std::fprintf(stderr, "%s [%s] %s\n", ts, level, msg.c_str());
 }
 
-// Build the reply for one request. Hardcoded "clear" for now.
+// Inspect every configured repo and return {repos: [...], summary line}.
+struct LocalScan {
+    json repos = json::array();
+    std::string message;
+};
+
+LocalScan scan_local() {
+    LocalScan scan;
+    std::string cfg_err;
+    lockstep::Config cfg = lockstep::load_config(&cfg_err);
+
+    if (!cfg_err.empty()) {
+        scan.message = cfg_err;
+        return scan;
+    }
+    if (cfg.repos.empty()) {
+        scan.message = "no repos watched — add paths to " + lockstep::config_path();
+        return scan;
+    }
+
+    int pending = 0;      // real local work: dirty or ahead of upstream
+    int unreadable = 0;   // path isn't a readable git work tree
+    for (const auto& path : cfg.repos) {
+        lockstep::RepoState s = lockstep::inspect(path);
+        json entry = {{"path", s.path},
+                      {"is_repo", s.is_repo},
+                      {"branch", s.branch},
+                      {"dirty", s.dirty},
+                      {"has_upstream", s.has_upstream},
+                      {"ahead", s.ahead},
+                      {"behind", s.behind}};
+        if (!s.error.empty()) entry["error"] = s.error;
+        entry["clean"] = lockstep::is_clean(s);
+
+        if (!s.error.empty() || !s.is_repo) {
+            ++unreadable;
+        } else if (s.dirty > 0 || (s.has_upstream && s.ahead > 0)) {
+            ++pending;
+        }
+        scan.repos.push_back(std::move(entry));
+    }
+
+    scan.message = std::to_string(cfg.repos.size()) + " repo(s) watched, " +
+                   std::to_string(pending) + " with pending local work";
+    if (unreadable > 0)
+        scan.message += ", " + std::to_string(unreadable) + " unreadable";
+    return scan;
+}
+
+// Build the reply for one request.
 json handle(const json& req) {
     std::string cmd = req.value("cmd", "");
 
@@ -57,14 +108,20 @@ json handle(const json& req) {
         return {{"ok", true}, {"pong", true}};
     }
     if (cmd == lockstep::ipc::kCmdVerdict) {
-        // TODO(slice 2+): consult cached other-machine state here.
-        return {{"ok", true}, {"clear", true}, {"message", "clear (stub)"}};
-    }
-    if (cmd == lockstep::ipc::kCmdStatus) {
+        // Verdict is about the OTHER machine's pending work, which requires the
+        // GitHub rendezvous (slice 3). Until that exists there's no remote state
+        // to block on, so we stay clear. Local dirty state is the user's own and
+        // never blocks their commit.
         return {{"ok", true},
                 {"clear", true},
-                {"repos", json::array()},
-                {"message", "no repos watched yet (stub daemon)"}};
+                {"message", "clear (no other-machine state yet)"}};
+    }
+    if (cmd == lockstep::ipc::kCmdStatus) {
+        LocalScan scan = scan_local();
+        return {{"ok", true},
+                {"clear", true},
+                {"repos", std::move(scan.repos)},
+                {"message", scan.message}};
     }
     return {{"ok", false}, {"error", "unknown command: " + cmd}};
 }
