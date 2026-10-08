@@ -320,6 +320,19 @@ subcommand; `lockstep why`.
    the `pre-push` hook.
 6. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
 
+## Future idea — dependency-aware watching (Eric, 2026-10-08)
+
+Projects depend on shared libs: **StageHand** and **Umpire** both need **uw-core**.
+Today lockstep treats each watched repo independently. The ask: a repo's verdict
+should also consider its *dependencies'* cross-machine state — e.g. committing in
+StageHand on the Mac should warn if **uw-core** has uncommitted/unpushed work on the
+other machine, because StageHand's dependency is out of sync even though StageHand
+itself looks clean. Shape (not built): a per-repo `depends_on: ["uw-core", ...]` in
+config; verdict unions the repo's own blockers with its dependencies' blockers from
+the other machine's blob (matched by basename, as today). Deferred — captured so it
+isn't lost. (StageHand and Umpire aren't cloned on this Mac yet, so they're not in
+the current watch list.)
+
 ## Current config
 
 Mac config lives at `~/.config/lockstep/config.json`. Example:
