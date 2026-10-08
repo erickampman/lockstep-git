@@ -12,6 +12,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <memory>
 #include <string>
 
 #include <sys/socket.h>
@@ -122,6 +123,21 @@ std::string resolve_rendezvous_dir(const lockstep::Config& cfg) {
     return cfg.rendezvous_dir;
 }
 
+std::string resolve_rendezvous_repo(const lockstep::Config& cfg) {
+    if (std::string e = env_or_empty("LOCKSTEP_RENDEZVOUS_REPO"); !e.empty()) return e;
+    return cfg.rendezvous_repo;
+}
+
+// Pick the backend: a git-clone rendezvous repo wins over the local file dir
+// (the latter is for tests/interim). Returns null when neither is configured.
+std::unique_ptr<lockstep::Rendezvous> make_rendezvous(const lockstep::Config& cfg) {
+    if (std::string repo = resolve_rendezvous_repo(cfg); !repo.empty())
+        return std::make_unique<lockstep::GitHubRendezvous>(repo);
+    if (std::string dir = resolve_rendezvous_dir(cfg); !dir.empty())
+        return std::make_unique<lockstep::FileRendezvous>(dir);
+    return nullptr;
+}
+
 std::string human_age(int64_t ts) {
     int64_t secs = static_cast<int64_t>(std::time(nullptr)) - ts;
     if (secs < 0) secs = 0;
@@ -150,9 +166,9 @@ void publish_self(const lockstep::Config& cfg, const lockstep::crypto::Key& key,
 // (optional) restricts the check to one repo name (the committing repo).
 json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter) {
     std::string key_path = resolve_key_path(cfg);
-    std::string rv_dir = resolve_rendezvous_dir(cfg);
 
-    if (rv_dir.empty()) {
+    auto rv = make_rendezvous(cfg);
+    if (!rv) {
         return {{"ok", true}, {"clear", true},
                 {"message", "clear (rendezvous not configured)"}};
     }
@@ -163,11 +179,10 @@ json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter)
                 {"message", "clear (no shared key: " + kerr + ")"}};
     }
 
-    lockstep::FileRendezvous rv(rv_dir);
-    publish_self(cfg, *key, rv);  // keep our slot fresh
+    publish_self(cfg, *key, *rv);  // keep our slot fresh
 
     std::string ferr;
-    auto others = rv.fetch_others(lockstep::machine_id(cfg), &ferr);
+    auto others = rv->fetch_others(lockstep::machine_id(cfg), &ferr);
     if (!others) {
         return {{"ok", true}, {"clear", true},
                 {"message", "clear (rendezvous unreadable: " + ferr + ")"}};
@@ -264,6 +279,9 @@ int main() {
         log_line("error", "libsodium init failed");
         return 1;
     }
+
+    // Never let a git credential prompt hang the daemon: fail fast instead.
+    ::setenv("GIT_TERMINAL_PROMPT", "0", 1);
 
     install_handler(SIGTERM, on_signal);
     install_handler(SIGINT, on_signal);

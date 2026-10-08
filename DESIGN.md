@@ -273,26 +273,59 @@ Verified two-machine scenarios (mac+linux sharing a dir+key): both clean → cle
 linux dirty → mac blocks with the right message; linux commits+pushes → mac clear
 again; wrong key on the daemon → fail-open clear + warn.
 
-**Deferred deliberately (not yet built):** the **GitHub-private-repo rendezvous
-backend** (commit/push/pull the per-machine blob files over `FileRendezvous`'s shape)
-— the one slice-3 piece that needs network + your setup; a **background tick loop**
-(daemon currently publishes/fetches on demand during verdict/status, not periodically);
-Qt tray; FSEvents push watching; LaunchAgent plist + systemd user unit; `pre-push`
-hook; `lockstep install` subcommand; `lockstep why`.
+**Slice 3 (GitHub backend) — `GitHubRendezvous` — DONE (2026-10-08).**
+- `src/common/rendezvous_github.cpp` — a `Rendezvous` backed by a local clone of the
+  private repo. `publish`: sync to origin, write `<machine>.blob`, commit, `push -u
+  origin HEAD`, retrying on a non-fast-forward (concurrent push); bootstraps an empty
+  repo (unborn `main`). `fetch_others`: fetch + hard-reset to origin, read the other
+  machines' blobs. Each machine only writes its own file, so the sole conflict is a
+  rejected push, which the retry resolves. Daemon sets `GIT_TERMINAL_PROMPT=0` so a
+  missing credential fails fast instead of hanging.
+- Backend selection: `rendezvous_repo` (git clone) wins over `rendezvous_dir` (file,
+  tests). Config keys + env `LOCKSTEP_RENDEZVOUS_REPO` / `LOCKSTEP_RENDEZVOUS_DIR`.
+- Verified offline against a local bare repo as origin with two clones (mac/linux):
+  empty-repo bootstrap, clean→clear, dirty→block (right message), commit+push→clear.
+  Confirmed the pushed blobs are ciphertext — no plaintext (filenames/branch/state)
+  on the remote.
+
+**Real-world wiring (what you do once):** private repo `lockstep-rendezvous` cloned
+to `~/Dev-Common/lockstep-rendezvous` (mac). Set `"rendezvous_repo"` to that path and
+run `lockstep keygen`, then copy `~/.config/lockstep/key` to the Linux box and clone
+the same private repo there. See "Current config" below.
+
+**Known tradeoff — per-commit latency.** With no tick loop yet, `verdict` does a live
+`git fetch`/`push` to the rendezvous on each call, so a `pre-commit` hook pays a
+network round-trip to GitHub per commit. Correct but slow-ish, and offline it falls
+back to stale-but-usable local state. The **background tick loop** (next) fixes this:
+the daemon publishes/fetches periodically and `verdict` reads the cache.
+
+**Deferred deliberately (not yet built):** a **background tick loop** (periodic
+publish/fetch; removes per-commit network latency); Qt tray; FSEvents/fsmonitor push
+watching; LaunchAgent plist + systemd user unit; `pre-push` hook; `lockstep install`
+subcommand; `lockstep why`.
 
 ## Suggested next steps on the Mac
 
 1. ~~**Repo watching + real verdict.**~~ DONE (slice 2).
 2. ~~**Rendezvous crypto/blob + blocking verdict.**~~ DONE (slice 3 core, offline).
-3. **GitHub-private-repo backend (needs network + your setup).** Create a *private*
-   `lockstep-rendezvous` repo (separate from this public one); `lockstep keygen` then
-   copy `~/.config/lockstep/key` to the Linux box out of band. Implement a
-   `GitHubRendezvous : Rendezvous` that clones/pulls the private repo, writes
-   `<machine>.blob`, commits + pushes on publish, and pulls on fetch — same shape as
-   `FileRendezvous`, so the verdict logic is unchanged. Auth via the `gh` CLI or a
-   token. This is the step that makes it work across the real two machines.
+3. ~~**GitHub-private-repo backend.**~~ DONE (slice 3 GitHub backend).
 4. **Background tick loop** in the daemon: periodically publish + fetch (FSEvents on
-   mac, fsmonitor/poll on linux) so state is fresh without waiting for a verdict.
+   mac, fsmonitor/poll on linux) so state is fresh without waiting for a verdict —
+   removes the per-commit network latency noted above.
 5. `lockstep install` subcommand (LaunchAgent plist / systemd user unit + hooks) +
    the `pre-push` hook.
 6. Qt tray (`QSystemTrayIcon`; native on both the macOS menubar and Linux).
+
+## Current config
+
+Mac config lives at `~/.config/lockstep/config.json`. Example:
+```json
+{
+  "machine": "mac",
+  "repos": ["~/Dev-Tools/lockstep-git", "~/Dev-Common/some-project"],
+  "rendezvous_repo": "~/Dev-Common/lockstep-rendezvous"
+}
+```
+Shared key: `~/.config/lockstep/key` (0600), made with `lockstep keygen`, copied out
+of band to the Linux box's same path. The private rendezvous repo is cloned to
+`~/Dev-Common/lockstep-rendezvous` on the mac (clone the same repo on linux).

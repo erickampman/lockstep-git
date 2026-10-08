@@ -12,6 +12,7 @@ add_library(lockstep_common STATIC
     ipc.cpp
     paths.cpp
     rendezvous_file.cpp
+    rendezvous_github.cpp
     subprocess.cpp)
 
 target_include_directories(lockstep_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

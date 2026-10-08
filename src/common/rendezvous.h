@@ -44,4 +44,26 @@ private:
     std::string dir_;
 };
 
+// GitHub (or any git remote) backend: a local clone of a *private* repo whose
+// working tree is exactly the FileRendezvous shape (one `<machine>.blob` per
+// machine). publish syncs to origin, writes this machine's blob, commits and
+// pushes (retrying on a concurrent push); fetch_others pulls, then reads the
+// other machines' blobs. Each machine only ever writes its own file, so the
+// only conflict is a non-fast-forward push, which the retry resolves.
+//
+// The daemon sets GIT_TERMINAL_PROMPT=0 so a missing credential fails fast
+// instead of hanging the daemon on an interactive prompt.
+class GitHubRendezvous : public Rendezvous {
+public:
+    explicit GitHubRendezvous(std::string clone_dir);
+
+    bool publish(const std::string& machine, const std::vector<uint8_t>& blob,
+                 std::string* err) override;
+    std::optional<std::map<std::string, std::vector<uint8_t>>>
+    fetch_others(const std::string& self, std::string* err) override;
+
+private:
+    std::string dir_;
+};
+
 }  // namespace lockstep
