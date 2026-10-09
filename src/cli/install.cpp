@@ -347,12 +347,26 @@ std::string tray_service_contents() {
            "X-GNOME-Autostart-enabled=true\n";
 }
 
-void tray_stop() { run({"pkill", "-x", "lockstep-tray"}); }
+constexpr const char* kTrayUnit = "lockstep-tray.service";
 
-// (Re)start the tray now so it runs the current binary — detached into its own
-// session (double fork, stdio to /dev/null) so it outlives this command and the
-// terminal it ran in. Needs a graphical session; without one, autostart picks
-// it up at the next login.
+// Stop any running tray — the transient unit tray_start makes, or one the
+// desktop's autostart launched — and wait for it to be gone, so a tray started
+// right after doesn't race the old one for its slot in the tray.
+void tray_stop() {
+    run({"systemctl", "--user", "stop", kTrayUnit});
+    run({"pkill", "-x", "lockstep-tray"});
+    for (int i = 0; i < 30 && ok(run({"pgrep", "-x", "lockstep-tray"})); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
+
+// (Re)start the tray now so it runs the current binary. Preferably as a
+// transient systemd user unit: it then gets the desktop session's environment
+// from the user manager rather than ours — a shell inside a snap'd editor
+// (e.g. VSCodium's terminal) leaks GTK_PATH & co., which make Qt load the
+// snap's libraries and die on startup — and it outlives this command and the
+// terminal it ran in. Without systemd, fall back to a detached child (double
+// fork, stdio to /dev/null). Needs a graphical session; without one,
+// autostart picks it up at the next login.
 bool tray_start(std::string* err) {
     if (!std::getenv("WAYLAND_DISPLAY") && !std::getenv("DISPLAY")) {
         *err = "no graphical session here — it will start at your next desktop login";
@@ -360,6 +374,8 @@ bool tray_start(std::string* err) {
     }
     tray_stop();
     std::string bin = (bin_dir() / "lockstep-tray").string();
+    if (ok(run({"systemd-run", "--user", "--quiet", "--collect", "--unit", kTrayUnit, bin})))
+        return true;
     pid_t pid = ::fork();
     if (pid < 0) {
         *err = "fork failed";
