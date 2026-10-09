@@ -176,6 +176,13 @@ uncommitted changes against `HEAD` (or, with `--last`, the last commit) in
 git's `diff.tool`, so set one first, e.g. `git config --global diff.tool bc`.
 Untracked files aren't shown, though it tells you how many there are.
 
+**Commit and pull.** `lockstep commit [<name|path>]` opens a UI to review and
+commit: GitHub Desktop (macOS) if installed, else `git gui`, else a terminal window
+in the repo. The hooks still run there. `lockstep pull [<name|path>]` only ever
+fast-forwards, whatever your `pull.rebase` setting. If the branch has diverged,
+or the incoming changes would overwrite your uncommitted edits, it changes nothing
+and says why. The tray has all of these in each local repo's submenu.
+
 **Dependencies.** If one project depends on another watched repo, declare it and the
 other machine's pending work there becomes a warning, not a block:
 

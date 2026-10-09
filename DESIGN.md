@@ -460,7 +460,18 @@ you review the diff first.
   files aren't shown, only counted. In the tray, each local repo is a submenu with
   "View current changes" / "View last commit", which run `lockstep diff` as an async
   `QProcess` with the PATH fix above and turn its output into notifications.
-  Commit…, editor, terminal and pull are still ideas.
+- **Built (2026-10-09): commit and pull.** `lockstep commit` opens the first of
+  GitHub Desktop (macOS, `open -a`), `git gui` (found via `git --exec-path`), or a
+  terminal in the repo. It's auto-detected rather than configured, per Eric. GitHub
+  Desktop on Linux is an unofficial fork, so it isn't looked for there.
+  `lockstep pull` is `git pull --no-rebase --ff-only`: plain `--ff-only` still
+  takes the rebase path under `pull.rebase=true` and refuses any dirty tree, while
+  `--no-rebase --ff-only` fast-forwards past unrelated edits and refuses diverged
+  branches or overlapping edits without touching anything. `GIT_TERMINAL_PROMPT=0`
+  so a credential prompt fails instead of hanging the tray's child. In the tray,
+  Commit… is enabled when the repo is dirty. Pull is enabled whenever there's an
+  upstream, and says "(N behind)" when known, because "behind" is only as fresh
+  as the repo's last fetch. Editor and terminal items are still ideas.
 
 ## Current config
 

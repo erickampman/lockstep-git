@@ -4,7 +4,7 @@
 // socket every few seconds, tints the "¿?" mark green/yellow/red — the ¿ for
 // this machine, the ? for the other machine(s) — and notifies on state changes. "Add repo…" and "Remove repo" shell out to `lockstep
 // add`/`remove` — the config-mutation logic lives there, not here. Each local
-// repo's submenu opens diffs the same way, via `lockstep diff`.
+// repo's submenu runs `lockstep diff`/`commit`/`pull` the same way.
 
 #include <QApplication>
 #include <QColor>
@@ -280,13 +280,17 @@ struct Tray {
                          QSystemTrayIcon::Information, 6000);
     }
 
-    // Open a diff of a local repo without blocking the tray: the diff tool
-    // runs until its window is closed. `lockstep diff` explains itself when
-    // there's nothing to show or no tool is set, so surface that output.
-    void viewDiff(const QString& path, bool last) {
-        QStringList args{QStringLiteral("diff"), path};
-        if (last) args << QStringLiteral("--last");
-        QString title = QStringLiteral("lockstep diff — ") + QFileInfo(path).fileName();
+    // Run `lockstep <action> <path> [extra]` for a local repo without blocking
+    // the tray: a diff tool or git gui runs until its window is closed, and a
+    // pull waits on the network. The CLI explains itself (nothing to diff,
+    // pulled N commits, can't fast-forward), so surface its output, then
+    // refresh so a pull or commit shows up right away.
+    void runRepoAction(const QString& action, const QString& path,
+                       const QStringList& extra = {}) {
+        QStringList args{action, path};
+        args << extra;
+        QString title = QStringLiteral("lockstep ") + action + QStringLiteral(" — ") +
+                        QFileInfo(path).fileName();
 
         auto* p = new QProcess(qApp);
         p->setProcessEnvironment(launchEnv());
@@ -297,10 +301,11 @@ struct Tray {
                               .trimmed();
             bool failed = code != 0 || status != QProcess::NormalExit;
             if (failed || !out.isEmpty())
-                icon.showMessage(title, out.isEmpty() ? QStringLiteral("diff failed") : out,
+                icon.showMessage(title, out.isEmpty() ? QStringLiteral("failed") : out,
                                  failed ? QSystemTrayIcon::Warning : QSystemTrayIcon::Information,
                                  6000);
             p->deleteLater();
+            refresh();
         });
         QObject::connect(p, &QProcess::errorOccurred, p, [this, p, title](QProcess::ProcessError e) {
             if (e != QProcess::FailedToStart) return;  // the rest also emit finished
@@ -312,15 +317,31 @@ struct Tray {
     }
 
     // A local repo as a submenu of `parent`, titled with its status, holding
-    // the actions for it.
+    // the actions for it. Commit needs something to commit; pull needs an
+    // upstream, and stays enabled when not known to be behind because "behind"
+    // is only as fresh as the repo's last fetch (the pull fetches).
     void addRepoMenu(QMenu* parent, const QString& title, const json& r) {
         QMenu* sub = parent->addMenu(title);
         QString path = QString::fromStdString(r.value("path", ""));
         bool readable = !r.contains("error");
-        sub->addAction(QStringLiteral("View current changes"), [this, path] { viewDiff(path, false); })
-            ->setEnabled(readable && r.value("dirty", 0) > 0);
-        sub->addAction(QStringLiteral("View last commit"), [this, path] { viewDiff(path, true); })
+        bool dirty = r.value("dirty", 0) > 0;
+        sub->addAction(QStringLiteral("View current changes"),
+                       [this, path] { runRepoAction(QStringLiteral("diff"), path); })
+            ->setEnabled(readable && dirty);
+        sub->addAction(QStringLiteral("View last commit"),
+                       [this, path] {
+                           runRepoAction(QStringLiteral("diff"), path, {QStringLiteral("--last")});
+                       })
             ->setEnabled(readable);
+        sub->addSeparator();
+        sub->addAction(QStringLiteral("Commit…"),
+                       [this, path] { runRepoAction(QStringLiteral("commit"), path); })
+            ->setEnabled(readable && dirty);
+        int behind = r.value("behind", 0);
+        sub->addAction(behind > 0 ? QStringLiteral("Pull (%1 behind)").arg(behind)
+                                  : QStringLiteral("Pull"),
+                       [this, path] { runRepoAction(QStringLiteral("pull"), path); })
+            ->setEnabled(readable && r.value("has_upstream", false));
     }
 
     void addRepo() {

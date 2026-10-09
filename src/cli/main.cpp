@@ -5,7 +5,9 @@
 //                     (--warn-exit: exit 3 when clear but with warnings)
 //   lockstep ping     liveness check
 //   lockstep install  links + hooks + login service (see install.h)
-//   lockstep diff     visual diff of local changes / last commit (see diff.h)
+//   lockstep diff     visual diff of local changes / last commit
+//   lockstep commit   open a commit UI for a repo
+//   lockstep pull     fast-forward-only pull (all three: see repo_actions.h)
 //
 // Everything here is IPC + formatting; the daemon holds the state.
 
@@ -20,7 +22,7 @@
 
 #include "config.h"
 #include "crypto.h"
-#include "diff.h"
+#include "repo_actions.h"
 #include "install.h"
 #include "ipc.h"
 #include "paths.h"
@@ -42,6 +44,9 @@ int usage(const char* argv0) {
                  "  remove    stop watching: lockstep remove <path|name>\n"
                  "  diff      visual diff (git difftool): lockstep diff [<name|path>] [--last]\n"
                  "            current changes vs HEAD, or --last for the last commit\n"
+                 "  commit    open a commit UI: lockstep commit [<name|path>]\n"
+                 "            (GitHub Desktop, else git gui, else a terminal)\n"
+                 "  pull      fast-forward-only pull: lockstep pull [<name|path>]\n"
                  "  install   link binaries into ~/.local/bin, install hooks in watched\n"
                  "            repos, and run the daemon at login (re-run after config\n"
                  "            changes)\n"
@@ -273,6 +278,15 @@ int main(int argc, char** argv) {
             } else target = argv[i];
         }
         return lockstep::cli::cmd_diff(target, last);
+    }
+    if (cmd == "commit" || cmd == "pull") {
+        if (argc > 3 || (argc == 3 && argv[2][0] == '-')) {
+            std::fprintf(stderr, "usage: lockstep %s [<name|path>]\n", cmd.c_str());
+            return 2;
+        }
+        std::string target = argc == 3 ? argv[2] : "";
+        return cmd == "commit" ? lockstep::cli::cmd_commit(target)
+                               : lockstep::cli::cmd_pull(target);
     }
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { usage(argv[0]); return 0; }
 
