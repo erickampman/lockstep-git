@@ -10,6 +10,7 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QIcon>
@@ -257,6 +258,27 @@ struct Tray {
     QMenu menu;
     Health last = Health::Unknown;
 
+    // Rebuilding the menu while it's open yanks rows out from under the
+    // pointer (and on macOS can close it). So while it's showing, a refresh
+    // only notes that one is due, and the menu catches up when it closes. If
+    // the close never arrives (a tray host that doesn't report it), stop
+    // waiting after a minute rather than freezing the menu.
+    bool menuOpen = false;
+    bool refreshPending = false;
+    QElapsedTimer openedAt;
+
+    void watchMenu() {
+        QObject::connect(&menu, &QMenu::aboutToShow, [this] {
+            menuOpen = true;
+            openedAt.start();
+        });
+        QObject::connect(&menu, &QMenu::aboutToHide, [this] {
+            menuOpen = false;
+            // Queued: the hide can come just before the chosen action fires.
+            if (refreshPending) QTimer::singleShot(0, [this] { refresh(); });
+        });
+    }
+
     void addInfo(const QString& text) {
         QAction* a = menu.addAction(text);
         a->setEnabled(false);
@@ -369,6 +391,12 @@ struct Tray {
     }
 
     void refresh() {
+        if (menuOpen && openedAt.elapsed() < 60000) {
+            refreshPending = true;
+            return;
+        }
+        menuOpen = false;
+        refreshPending = false;
         auto reply = lockstep::ipc::request(lockstep::socket_path(),
                                             {{"cmd", "status"}});
         menu.clear();
@@ -547,6 +575,7 @@ int main(int argc, char** argv) {
     static Tray tray;  // constructed after QApplication; lives for the app's life
     tray.icon.setIcon(trayIcon(Health::Unknown, Health::Unknown));
     tray.icon.setContextMenu(&tray.menu);
+    tray.watchMenu();
     tray.icon.setToolTip(QStringLiteral("lockstep"));
     tray.icon.show();
     tray.refresh();
