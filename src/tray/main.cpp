@@ -3,7 +3,8 @@
 // A thin GUI client of the daemon (same as the CLI): it polls `status` over the
 // socket every few seconds, tints the "¿?" mark green/yellow/red — the ¿ for
 // this machine, the ? for the other machine(s) — and notifies on state changes. "Add repo…" and "Remove repo" shell out to `lockstep
-// add`/`remove` — the config-mutation logic lives there, not here.
+// add`/`remove` — the config-mutation logic lives there, not here. Each local
+// repo's submenu opens diffs the same way, via `lockstep diff`.
 
 #include <QApplication>
 #include <QColor>
@@ -17,6 +18,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
@@ -27,6 +29,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef __APPLE__
@@ -192,6 +195,21 @@ QString lockstepBin() {
     return onPath.isEmpty() ? QStringLiteral("lockstep") : onPath;
 }
 
+// Environment for tools we launch. launchd and the desktop session start us
+// with a minimal PATH, so diff tools like bcomp or meld in /usr/local/bin or
+// Homebrew wouldn't be found by git.
+QProcessEnvironment launchEnv() {
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    QStringList path = env.value(QStringLiteral("PATH")).split(':', Qt::SkipEmptyParts);
+    const QStringList extra = {QDir::homePath() + "/.local/bin",
+                               QStringLiteral("/opt/homebrew/bin"),
+                               QStringLiteral("/usr/local/bin")};
+    for (auto it = extra.rbegin(); it != extra.rend(); ++it)
+        if (!path.contains(*it)) path.prepend(*it);
+    env.insert(QStringLiteral("PATH"), path.join(':'));
+    return env;
+}
+
 QString describeRepo(const json& r) {
     int dirty = r.value("dirty", 0);
     QString s = dirty == 0 ? QStringLiteral("clean") : QStringLiteral("%1 dirty").arg(dirty);
@@ -260,6 +278,49 @@ struct Tray {
         icon.showMessage(QStringLiteral("lockstep ") + args.join(' '),
                          out.isEmpty() ? QStringLiteral("done") : out,
                          QSystemTrayIcon::Information, 6000);
+    }
+
+    // Open a diff of a local repo without blocking the tray: the diff tool
+    // runs until its window is closed. `lockstep diff` explains itself when
+    // there's nothing to show or no tool is set, so surface that output.
+    void viewDiff(const QString& path, bool last) {
+        QStringList args{QStringLiteral("diff"), path};
+        if (last) args << QStringLiteral("--last");
+        QString title = QStringLiteral("lockstep diff — ") + QFileInfo(path).fileName();
+
+        auto* p = new QProcess(qApp);
+        p->setProcessEnvironment(launchEnv());
+        QObject::connect(p, &QProcess::finished, p,
+                         [this, p, title](int code, QProcess::ExitStatus status) {
+            QString out = (QString::fromUtf8(p->readAllStandardOutput()) +
+                           QString::fromUtf8(p->readAllStandardError()))
+                              .trimmed();
+            bool failed = code != 0 || status != QProcess::NormalExit;
+            if (failed || !out.isEmpty())
+                icon.showMessage(title, out.isEmpty() ? QStringLiteral("diff failed") : out,
+                                 failed ? QSystemTrayIcon::Warning : QSystemTrayIcon::Information,
+                                 6000);
+            p->deleteLater();
+        });
+        QObject::connect(p, &QProcess::errorOccurred, p, [this, p, title](QProcess::ProcessError e) {
+            if (e != QProcess::FailedToStart) return;  // the rest also emit finished
+            icon.showMessage(title, QStringLiteral("could not run ") + lockstepBin(),
+                             QSystemTrayIcon::Warning, 6000);
+            p->deleteLater();
+        });
+        p->start(lockstepBin(), args);
+    }
+
+    // A local repo as a submenu of `parent`, titled with its status, holding
+    // the actions for it.
+    void addRepoMenu(QMenu* parent, const QString& title, const json& r) {
+        QMenu* sub = parent->addMenu(title);
+        QString path = QString::fromStdString(r.value("path", ""));
+        bool readable = !r.contains("error");
+        sub->addAction(QStringLiteral("View current changes"), [this, path] { viewDiff(path, false); })
+            ->setEnabled(readable && r.value("dirty", 0) > 0);
+        sub->addAction(QStringLiteral("View last commit"), [this, path] { viewDiff(path, true); })
+            ->setEnabled(readable);
     }
 
     void addRepo() {
@@ -376,7 +437,7 @@ struct Tray {
         menu.addSeparator();
 
         addInfo(QStringLiteral("This machine"));
-        QStringList cleanHere;
+        std::vector<std::pair<QString, json>> cleanHere;
         for (const auto& r : st.value("repos", json::array())) {
             std::string path = r.value("path", "");
             QString name = QString::fromStdString(lockstep::repo_name(path));
@@ -385,14 +446,15 @@ struct Tray {
             QString line = name + QStringLiteral(" — ") + describeRepo(r) +
                            (behind ? QStringLiteral(" — pull before working") : QString());
             if (fine)
-                cleanHere << mark(true) + line;
+                cleanHere.emplace_back(mark(true) + line, r);
             else
-                addInfo(QStringLiteral("  ") + mark(false) + line);
+                addRepoMenu(&menu, QStringLiteral("  ") + mark(false) + line, r);
         }
-        if (!cleanHere.isEmpty())
-            addDetails(&menu, QStringLiteral("  ") + mark(true) +
-                                  QStringLiteral("%1 clean").arg(cleanHere.size()),
-                       cleanHere);
+        if (!cleanHere.empty()) {
+            QMenu* clean = menu.addMenu(QStringLiteral("  ") + mark(true) +
+                                        QStringLiteral("%1 clean").arg(cleanHere.size()));
+            for (const auto& [line, r] : cleanHere) addRepoMenu(clean, line, r);
+        }
 
         menu.addSeparator();
         auto others = st.value("others", json::array());

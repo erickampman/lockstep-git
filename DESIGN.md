@@ -453,6 +453,14 @@ you review the diff first.
   just to feed AI, because that breaks the privacy model (blobs carry counts only).
 - **Suggested first slice:** View changes + Commit… (`git gui`), since those cover
   the review-before-commit concern.
+- **Built (2026-10-09): diffs.** `lockstep diff [<name|path>] [--last]` runs
+  `git difftool --dir-diff` on the working tree vs `HEAD`, or with `--last` on the
+  last commit vs its first parent (empty tree for a root commit). It uses git's
+  `diff.tool` and refuses rather than falling back to terminal vimdiff. Untracked
+  files aren't shown, only counted. In the tray, each local repo is a submenu with
+  "View current changes" / "View last commit", which run `lockstep diff` as an async
+  `QProcess` with the PATH fix above and turn its output into notifications.
+  Commit…, editor, terminal and pull are still ideas.
 
 ## Current config
 
