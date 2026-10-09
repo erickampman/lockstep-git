@@ -5,6 +5,7 @@
 //                     (--warn-exit: exit 3 when clear but with warnings)
 //   lockstep ping     liveness check
 //   lockstep install  links + hooks + login service (see install.h)
+//   lockstep diff     visual diff of local changes / last commit (see diff.h)
 //
 // Everything here is IPC + formatting; the daemon holds the state.
 
@@ -19,6 +20,7 @@
 
 #include "config.h"
 #include "crypto.h"
+#include "diff.h"
 #include "install.h"
 #include "ipc.h"
 #include "paths.h"
@@ -38,6 +40,8 @@ int usage(const char* argv0) {
                  "  keygen    generate the shared rendezvous key (once per pair)\n"
                  "  add       watch a repo: lockstep add <path> (installs its hooks)\n"
                  "  remove    stop watching: lockstep remove <path|name>\n"
+                 "  diff      visual diff (git difftool): lockstep diff [<name|path>] [--last]\n"
+                 "            current changes vs HEAD, or --last for the last commit\n"
                  "  install   link binaries into ~/.local/bin, install hooks in watched\n"
                  "            repos, and run the daemon at login (re-run after config\n"
                  "            changes)\n"
@@ -257,6 +261,18 @@ int main(int argc, char** argv) {
     if (cmd == "remove") {
         if (argc < 3) { std::fprintf(stderr, "usage: lockstep remove <path|name>\n"); return 2; }
         return lockstep::cli::cmd_remove(argv[2]);
+    }
+    if (cmd == "diff") {
+        std::string target;
+        bool last = false;
+        for (int i = 2; i < argc; ++i) {
+            if (std::strcmp(argv[i], "--last") == 0) last = true;
+            else if (argv[i][0] == '-' || !target.empty()) {
+                std::fprintf(stderr, "usage: lockstep diff [<name|path>] [--last]\n");
+                return 2;
+            } else target = argv[i];
+        }
+        return lockstep::cli::cmd_diff(target, last);
     }
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { usage(argv[0]); return 0; }
 

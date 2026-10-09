@@ -170,6 +170,12 @@ lockstep ping        # is the daemon up?
 LOCKSTEP_SKIP=1 git commit ...   # bypass the guard once
 ```
 
+**Visual diffs.** `lockstep diff [<name|path>] [--last]` opens this machine's
+uncommitted changes against `HEAD` (or, with `--last`, the last commit) in
+`git difftool --dir-diff`. With no argument it uses the repo you're in. It uses
+git's `diff.tool`, so set one first, e.g. `git config --global diff.tool bc`.
+Untracked files aren't shown, though it tells you how many there are.
+
 **Dependencies.** If one project depends on another watched repo, declare it and the
 other machine's pending work there becomes a warning, not a block:
 
