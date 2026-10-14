@@ -263,9 +263,19 @@ struct Tray {
     // only notes that one is due, and the menu catches up when it closes. If
     // the close never arrives (a tray host that doesn't report it), stop
     // waiting after a minute rather than freezing the menu.
+    //
+    // Hold off a moment after the close too: GNOME's AppIndicator extension
+    // reports the close over D-Bus *before* the click on the chosen row, and a
+    // rebuild in between deletes that row's action, so the click does nothing.
+    static constexpr int kCloseGraceMs = 1000;
     bool menuOpen = false;
     bool refreshPending = false;
     QElapsedTimer openedAt;
+    QElapsedTimer closedAt;
+
+    // The "Add repo" picker. One instance means repeated clicks while it's up
+    // raise it rather than stacking more pickers.
+    QFileDialog* picker = nullptr;
 
     void watchMenu() {
         QObject::connect(&menu, &QMenu::aboutToShow, [this] {
@@ -274,8 +284,8 @@ struct Tray {
         });
         QObject::connect(&menu, &QMenu::aboutToHide, [this] {
             menuOpen = false;
-            // Queued: the hide can come just before the chosen action fires.
-            if (refreshPending) QTimer::singleShot(0, [this] { refresh(); });
+            closedAt.start();
+            if (refreshPending) QTimer::singleShot(kCloseGraceMs, [this] { refresh(); });
         });
     }
 
@@ -367,11 +377,23 @@ struct Tray {
     }
 
     void addRepo() {
-        QString dir = QFileDialog::getExistingDirectory(
-            nullptr, QStringLiteral("Add a repo to watch"), QDir::homePath());
-        if (dir.isEmpty()) return;
-        runCli({QStringLiteral("add"), dir});
-        refresh();
+        if (picker) {
+            picker->raise();
+            picker->activateWindow();
+            return;
+        }
+        picker = new QFileDialog(nullptr, QStringLiteral("Add a repo to watch"),
+                                 QDir::homePath());
+        picker->setFileMode(QFileDialog::Directory);
+        picker->setOption(QFileDialog::ShowDirsOnly);
+        picker->setAttribute(Qt::WA_DeleteOnClose);
+        QObject::connect(picker, &QFileDialog::fileSelected, [this](const QString& dir) {
+            if (dir.isEmpty()) return;
+            runCli({QStringLiteral("add"), dir});
+            refresh();
+        });
+        QObject::connect(picker, &QObject::destroyed, [this] { picker = nullptr; });
+        picker->open();
     }
 
     void removeRepo(const QString& name) {
@@ -392,6 +414,12 @@ struct Tray {
 
     void refresh() {
         if (menuOpen && openedAt.elapsed() < 60000) {
+            refreshPending = true;
+            return;
+        }
+        if (!menuOpen && closedAt.isValid() && closedAt.elapsed() < kCloseGraceMs) {
+            if (!refreshPending)
+                QTimer::singleShot(kCloseGraceMs - closedAt.elapsed(), [this] { refresh(); });
             refreshPending = true;
             return;
         }
