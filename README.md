@@ -160,6 +160,12 @@ If nothing ever shows up, look at `lockstep status`:
   `journalctl --user -u lockstep` (Linux).
 - **"could not decrypt N blob(s): key mismatch?"**: the key files differ between
   machines (step 4).
+- **"N blob(s) empty or truncated: damaged rendezvous clone?"**: a blob file is too
+  short to be anything the daemon wrote, which usually means the local rendezvous
+  clone was damaged by a crash mid-write. The daemon detects a clone whose objects
+  are unreadable, moves it aside to `<clone>.corrupt-<timestamp>`, and clones it
+  fresh (at most once an hour; the log says when it does). Delete the `.corrupt-*`
+  copy once things look right.
 
 ## Day to day
 

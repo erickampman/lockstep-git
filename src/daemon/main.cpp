@@ -219,6 +219,7 @@ json pin_warnings(const lockstep::Config& cfg, const std::string& repo) {
 struct RendezvousCache {
     std::vector<lockstep::MachineBlob> others;  // other machines' decrypted state
     int undecryptable = 0;                      // blobs we couldn't decrypt (key mismatch?)
+    int truncated = 0;                          // blobs too short to be valid (damaged clone?)
     bool configured = false;                    // rendezvous + key both present
     bool ever = false;                          // at least one tick has run
     std::string status;                         // "" on clean success; else a reason
@@ -253,6 +254,7 @@ void do_tick() {
         g_cache.status = "rendezvous not configured";
         g_cache.others.clear();
         g_cache.undecryptable = 0;
+        g_cache.truncated = 0;
         return;
     }
     std::string kerr;
@@ -262,25 +264,37 @@ void do_tick() {
         g_cache.status = "no shared key: " + kerr;
         g_cache.others.clear();
         g_cache.undecryptable = 0;
+        g_cache.truncated = 0;
         return;
     }
     g_cache.configured = true;
 
     publish_self(cfg, *key, *rv);
+    if (std::string n = rv->take_notice(); !n.empty()) log_line("warn", n);
 
     std::string ferr;
     auto others = rv->fetch_others(lockstep::machine_id(cfg), &ferr);
+    if (std::string n = rv->take_notice(); !n.empty()) log_line("warn", n);
     if (!others) {
         g_cache.status = "rendezvous unreadable: " + ferr;  // keep stale others
         return;
     }
 
     // Warn once per machine per run on a decrypt failure, so a persistent key
-    // mismatch doesn't spam the log every tick.
+    // mismatch doesn't spam the log every tick. A blob too short to be valid is
+    // a damaged file, not a key mismatch — report it as such.
     static std::set<std::string> warned_decrypt;
     std::vector<lockstep::MachineBlob> fresh;
-    int undec = 0;
+    int undec = 0, trunc = 0;
     for (auto& [machine, enc] : *others) {
+        if (enc.size() < lockstep::crypto::kMinBlobBytes) {
+            ++trunc;
+            if (warned_decrypt.insert(machine).second)
+                log_line("warn", "blob from " + machine + " is empty or truncated (" +
+                                     std::to_string(enc.size()) +
+                                     " bytes) — damaged rendezvous clone?");
+            continue;
+        }
         auto plain = lockstep::crypto::decrypt(*key, enc);
         if (!plain) {
             ++undec;
@@ -298,6 +312,7 @@ void do_tick() {
     }
     g_cache.others = std::move(fresh);
     g_cache.undecryptable = undec;
+    g_cache.truncated = trunc;
     g_cache.status = "";
     g_cache.last_ok = static_cast<int64_t>(std::time(nullptr));
 }
@@ -367,6 +382,10 @@ json decide_verdict(const lockstep::Config& cfg, const std::string& repo_filter)
             msg = "clear, BUT could not decrypt " + std::to_string(g_cache.undecryptable) +
                   " blob(s) — key mismatch between machines? guard is not protecting"
                   " those.";
+        else if (g_cache.truncated > 0)
+            msg = "clear, BUT " + std::to_string(g_cache.truncated) +
+                  " blob(s) are empty or truncated — damaged rendezvous clone? guard is"
+                  " not protecting those.";
         out = reply(true, msg);
     } else {
         // Human one-liner for the first blocker; full list in `blockers`.
@@ -423,7 +442,8 @@ json handle(const json& req) {
         json sync = {{"configured", g_cache.configured},
                      {"ever", g_cache.ever},
                      {"status", g_cache.status},
-                     {"undecryptable", g_cache.undecryptable}};
+                     {"undecryptable", g_cache.undecryptable},
+                     {"truncated", g_cache.truncated}};
         if (g_cache.last_ok > 0) sync["last_sync"] = human_age(g_cache.last_ok);
 
         return {{"ok", true},

@@ -26,6 +26,11 @@ public:
     // An empty map means "no other machine has published yet" (not an error).
     virtual std::optional<std::map<std::string, std::vector<uint8_t>>>
     fetch_others(const std::string& self, std::string* err) = 0;
+
+    // A one-off event worth logging from the last publish/fetch (e.g. a damaged
+    // local clone was set aside and re-cloned). Empty when there's nothing to
+    // report; cleared by the call.
+    virtual std::string take_notice() { return {}; }
 };
 
 // Local-filesystem backend: one `<machine>.blob` file per machine under `dir`.
@@ -53,6 +58,10 @@ private:
 //
 // The daemon sets GIT_TERMINAL_PROMPT=0 so a missing credential fails fast
 // instead of hanging the daemon on an interactive prompt.
+//
+// The clone holds nothing but regenerated blobs, so if its object store is found
+// damaged (e.g. zero-length object files after a crash mid-write) it is moved
+// aside to `<clone_dir>.corrupt-<timestamp>` and cloned afresh from origin.
 class GitHubRendezvous : public Rendezvous {
 public:
     explicit GitHubRendezvous(std::string clone_dir);
@@ -61,9 +70,16 @@ public:
                  std::string* err) override;
     std::optional<std::map<std::string, std::vector<uint8_t>>>
     fetch_others(const std::string& self, std::string* err) override;
+    std::string take_notice() override;
 
 private:
+    // Sync the clone to origin, re-cloning it if it's damaged. False (with
+    // `err`) only when the clone is damaged and couldn't be replaced.
+    bool sync(const std::string& branch, std::string* err);
+    bool reclone(std::string* err);
+
     std::string dir_;
+    std::string notice_;
 };
 
 }  // namespace lockstep

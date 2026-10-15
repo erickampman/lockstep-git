@@ -13,6 +13,10 @@ namespace lockstep::crypto {
 
 inline constexpr size_t kKeyBytes = 32;    // crypto_aead_xchacha20poly1305_ietf_KEYBYTES
 inline constexpr size_t kNonceBytes = 24;  // ..._NPUBBYTES
+inline constexpr size_t kTagBytes = 16;    // ..._ABYTES
+// Smallest blob encrypt() can produce (empty plaintext). Anything shorter is a
+// truncated/empty file, not a key problem.
+inline constexpr size_t kMinBlobBytes = kNonceBytes + kTagBytes;
 
 using Key = std::vector<uint8_t>;  // kKeyBytes long
 

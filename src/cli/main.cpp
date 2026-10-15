@@ -148,6 +148,21 @@ int cmd_status() {
     bool configured = sync != reply->end() && sync->value("configured", false);
     auto others = reply->find("others");
 
+    // Blobs that were published but couldn't be read. Reported whether or not
+    // any other machine's state did decode — otherwise a machine whose only blob
+    // is unreadable would look like it never published.
+    int undec = sync != reply->end() ? sync->value("undecryptable", 0) : 0;
+    int trunc = sync != reply->end() ? sync->value("truncated", 0) : 0;
+    auto print_sync_issues = [&] {
+        if (undec > 0)
+            std::printf("  (⚠ %d blob(s) undecryptable — key mismatch?)\n", undec);
+        if (trunc > 0)
+            std::printf("  (⚠ %d blob(s) empty or truncated — damaged rendezvous clone?)\n",
+                        trunc);
+        std::string st = sync != reply->end() ? sync->value("status", "") : "";
+        if (!st.empty()) std::printf("  (sync issue: %s — showing last known)\n", st.c_str());
+    };
+
     std::printf("\n");
     if (sync != reply->end() && !configured) {
         std::printf("other machines — not available (%s)\n",
@@ -170,15 +185,13 @@ int cmd_status() {
                 }
             }
         }
-        if (sync != reply->end()) {
-            int undec = sync->value("undecryptable", 0);
-            if (undec > 0)
-                std::printf("  (⚠ %d blob(s) undecryptable — key mismatch?)\n", undec);
-            std::string st = sync->value("status", "");
-            if (!st.empty()) std::printf("  (sync issue: %s — showing last known)\n", st.c_str());
-        }
+        print_sync_issues();
+    } else if (undec > 0 || trunc > 0) {
+        std::printf("other machines — none readable:\n");
+        print_sync_issues();
     } else if (sync != reply->end() && sync->value("ever", false)) {
         std::printf("other machines — none have published yet\n");
+        print_sync_issues();
     } else {
         std::printf("other machines — no sync yet\n");
     }

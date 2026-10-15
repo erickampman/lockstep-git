@@ -607,6 +607,7 @@ struct Tray {
         const json sync = st.value("sync", json::object());
         if (!sync.value("configured", true)) yellow = true;
         if (sync.value("undecryptable", 0) > 0) yellow = true;
+        if (sync.value("truncated", 0) > 0) yellow = true;
         if (!sync.value("status", std::string()).empty()) yellow = true;
         QString redDetail, yellowDetail;
         for (const auto& m : st.value("others", json::array())) {
