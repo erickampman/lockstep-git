@@ -14,5 +14,5 @@
 - [x] `lockstep test`, with results synced to other machines
 - [x] Milestone and test status in the tray
 - [x] `lockstep review`
-- [ ] Try it on the Linux machine
-- [ ] Write MILESTONES.md for the other watched projects
+- [x] Try it on the Linux machine
+- [x] Write MILESTONES.md for the other watched projects
