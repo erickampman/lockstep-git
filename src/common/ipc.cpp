@@ -1,6 +1,7 @@
 #include "ipc.h"
 
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -11,6 +12,8 @@
 namespace lockstep::ipc {
 
 namespace {
+
+constexpr int kReplyTimeoutSeconds = 10;
 
 // Fill a sockaddr_un from `path`, guarding against the sun_path length limit
 // (104 on macOS, 108 on Linux). Returns false if the path is too long.
@@ -115,13 +118,23 @@ std::optional<nlohmann::json> request(const std::string& path,
         ~FdGuard() { ::close(fd); }
     } guard{fd};
 
+    // Don't hang forever on a daemon that accepted but is stuck (it's
+    // single-threaded): the tray would freeze and hooks would never return.
+    struct timeval tv{kReplyTimeoutSeconds, 0};
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
     if (!send_message(fd, req)) {
         if (err) *err = "failed to send request";
         return std::nullopt;
     }
+    errno = 0;
     auto reply = recv_message(fd);
     if (!reply) {
-        if (err) *err = "no/invalid reply from daemon";
+        if (err)
+            *err = (errno == EAGAIN || errno == EWOULDBLOCK)
+                       ? "daemon did not reply (busy or hung)"
+                       : "no/invalid reply from daemon";
         return std::nullopt;
     }
     return reply;

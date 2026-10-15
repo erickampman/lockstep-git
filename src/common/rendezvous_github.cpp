@@ -13,6 +13,9 @@ namespace {
 
 constexpr const char* kExt = ".blob";
 constexpr int kPushRetries = 3;
+// Upper bound on any one git invocation. The daemon is single-threaded, so a
+// network stall (e.g. a push hung mid-HTTP) would otherwise wedge it for good.
+constexpr int kGitTimeoutSeconds = 60;
 
 bool safe_machine(const std::string& m) {
     if (m.empty() || m == "." || m == "..") return false;
@@ -29,7 +32,7 @@ std::string trim(std::string s) {
 CmdResult git(const std::string& dir, std::vector<std::string> args) {
     std::vector<std::string> argv = {"git", "-C", dir};
     argv.insert(argv.end(), args.begin(), args.end());
-    return run(argv);
+    return run(argv, kGitTimeoutSeconds);
 }
 
 std::string current_branch(const std::string& dir) {
