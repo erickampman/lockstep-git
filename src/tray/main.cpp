@@ -4,8 +4,9 @@
 // socket every few seconds, tints the "¿?" mark green/yellow/red — the ¿ for
 // this machine, the ? for the other machine(s) — and notifies on state changes. "Add repo…" and "Remove repo" shell out to `lockstep
 // add`/`remove` — the config-mutation logic lives there, not here. Each local
-// repo's submenu runs `lockstep diff`/`commit`/`pull`/`test` the same way, and
-// shows where the repo stands against its MILESTONES.md.
+// repo's submenu runs `lockstep diff`/`commit`/`pull`/`test` the same way, opens
+// the repo in VS Code/VSCodium, and shows where the repo stands against its
+// MILESTONES.md.
 
 #include <QApplication>
 #include <QColor>
@@ -205,17 +206,40 @@ QString lockstepBin() {
 
 // Environment for tools we launch. launchd and the desktop session start us
 // with a minimal PATH, so diff tools like bcomp or meld in /usr/local/bin or
-// Homebrew wouldn't be found by git.
+// Homebrew wouldn't be found by git, nor a snap'd editor in /snap/bin.
 QProcessEnvironment launchEnv() {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     QStringList path = env.value(QStringLiteral("PATH")).split(':', Qt::SkipEmptyParts);
     const QStringList extra = {QDir::homePath() + "/.local/bin",
                                QStringLiteral("/opt/homebrew/bin"),
-                               QStringLiteral("/usr/local/bin")};
+                               QStringLiteral("/usr/local/bin"),
+                               QStringLiteral("/snap/bin")};
     for (auto it = extra.rbegin(); it != extra.rend(); ++it)
         if (!path.contains(*it)) path.prepend(*it);
     env.insert(QStringLiteral("PATH"), path.join(':'));
     return env;
+}
+
+// Locate a VS Code-family CLI: VSCodium or VS Code on PATH, then the CLI
+// inside a macOS app bundle (only on PATH if "Install 'code' command" was run).
+// Empty if none is installed.
+QString editorBin() {
+    QStringList path = launchEnv().value(QStringLiteral("PATH")).split(':', Qt::SkipEmptyParts);
+    for (const char* name : {"codium", "code"}) {
+        QString found = QStandardPaths::findExecutable(QString::fromLatin1(name), path);
+        if (!found.isEmpty()) return found;
+    }
+#ifdef __APPLE__
+    const QStringList bundles = {
+        QStringLiteral("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"),
+        QStringLiteral("/Applications/VSCodium.app/Contents/Resources/app/bin/codium")};
+    for (const QString& b : bundles) {
+        if (QFileInfo::exists(b)) return b;
+        QString inHome = QDir::homePath() + b;  // ~/Applications
+        if (QFileInfo::exists(inHome)) return inHome;
+    }
+#endif
+    return {};
 }
 
 QString describeRepo(const json& r) {
@@ -405,6 +429,20 @@ struct Tray {
 
     void openFile(const QString& file) { QDesktopServices::openUrl(QUrl::fromLocalFile(file)); }
 
+    // Open a repo in VS Code/VSCodium, reusing the last active window (`-r`).
+    // If the folder is already open in some window, the editor just focuses it.
+    void openInEditor(const QString& path) {
+        QString bin = editorBin();
+        QProcess p;
+        p.setProgram(bin);
+        p.setArguments({QStringLiteral("-r"), path});
+        p.setProcessEnvironment(launchEnv());
+        if (bin.isEmpty() || !p.startDetached())
+            icon.showMessage(QStringLiteral("lockstep — ") + QFileInfo(path).fileName(),
+                             QStringLiteral("could not start VS Code or VSCodium"),
+                             QSystemTrayIcon::Warning, 6000);
+    }
+
     // Start a MILESTONES.md from a template (never over an existing one) and
     // open it for editing.
     void createMilestones(const QString& path) {
@@ -481,6 +519,9 @@ struct Tray {
         for (const auto& line : remoteTests) info(QStringLiteral("Tests on ") + line);
         if (ms.is_object() || !remoteTests.isEmpty()) sub->addSeparator();
 
+        sub->addAction(QStringLiteral("Open in editor"), [this, path] { openInEditor(path); })
+            ->setEnabled(!path.isEmpty() && !editorBin().isEmpty());
+        sub->addSeparator();
         sub->addAction(QStringLiteral("View current changes"),
                        [this, path] { runRepoAction(QStringLiteral("diff"), path); })
             ->setEnabled(readable && dirty);

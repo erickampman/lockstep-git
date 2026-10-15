@@ -187,7 +187,9 @@ commit: GitHub Desktop (macOS) if installed, else `git gui`, else a terminal win
 in the repo. The hooks still run there. `lockstep pull [<name|path>]` only ever
 fast-forwards, whatever your `pull.rebase` setting. If the branch has diverged,
 or the incoming changes would overwrite your uncommitted edits, it changes nothing
-and says why. The tray has all of these in each local repo's submenu.
+and says why. The tray has all of these in each local repo's submenu, plus
+**Open in editor**, which opens the repo in VSCodium or VS Code (whichever it
+finds first), reusing the editor's most recently active window.
 
 **Dependencies.** If one project depends on another watched repo, declare it and the
 other machine's pending work there becomes a warning, not a block:
