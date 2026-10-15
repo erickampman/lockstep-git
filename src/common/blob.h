@@ -24,6 +24,12 @@ struct RepoBrief {
     int behind = 0;
     bool clean = true;        // no dirty + not ahead
     bool readable = true;     // false if the path wasn't a git work tree
+    // Last `lockstep test` run here (see milestones.h): pass/fail and when,
+    // and whether it ran against the current HEAD with a clean tree.
+    bool tested = false;
+    bool test_ok = false;
+    int64_t test_at = 0;
+    bool test_current = false;
 };
 
 // One machine's published state.

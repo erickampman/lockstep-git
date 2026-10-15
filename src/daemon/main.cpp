@@ -32,6 +32,7 @@
 #include "deps.h"
 #include "git.h"
 #include "ipc.h"
+#include "milestones.h"
 #include "paths.h"
 #include "rendezvous.h"
 
@@ -61,6 +62,14 @@ void log_line(const char* level, const std::string& msg) {
     char ts[32];
     std::strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", std::localtime(&t));
     std::fprintf(stderr, "%s [%s] %s\n", ts, level, msg.c_str());
+}
+
+std::string human_age(int64_t ts);
+
+// A test result as status replies carry it: {ok, as_of, current}, where
+// current means it ran against this HEAD with nothing uncommitted.
+json test_json(bool ok, int64_t at, bool current) {
+    return {{"ok", ok}, {"as_of", human_age(at)}, {"current", current}};
 }
 
 // Inspect every configured repo and return {repos: [...], summary line}.
@@ -96,6 +105,9 @@ LocalScan scan_local() {
                       {"behind", s.behind}};
         if (!s.error.empty()) entry["error"] = s.error;
         entry["clean"] = lockstep::is_clean(s);
+        if (json ms = lockstep::milestone_summary(path); !ms.is_null()) entry["milestone"] = ms;
+        if (auto t = lockstep::load_test_result(lockstep::repo_name(path)))
+            entry["test"] = test_json(t->ok, t->at, !t->dirty && !s.head.empty() && t->commit == s.head);
 
         if (!s.error.empty() || !s.is_repo) {
             ++unreadable;
@@ -402,6 +414,7 @@ json handle(const json& req) {
                                  {"ahead", r.ahead},
                                  {"behind", r.behind},
                                  {"readable", r.readable}});
+                if (r.tested) repos.back()["test"] = test_json(r.test_ok, r.test_at, r.test_current);
             }
             others.push_back({{"machine", b.machine},
                               {"as_of", human_age(b.timestamp)},

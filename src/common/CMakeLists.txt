@@ -11,6 +11,7 @@ add_library(lockstep_common STATIC
     deps.cpp
     git.cpp
     ipc.cpp
+    milestones.cpp
     paths.cpp
     rendezvous_file.cpp
     rendezvous_github.cpp

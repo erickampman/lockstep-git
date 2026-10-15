@@ -51,6 +51,8 @@ RepoState inspect(const std::string& repo_path) {
     // Current branch name (or "HEAD" when detached).
     CmdResult br = run({"git", "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"});
     if (br.spawned && br.exit_code == 0) st.branch = trim(br.out);
+    CmdResult hd = run({"git", "-C", repo_path, "rev-parse", "--short", "--verify", "-q", "HEAD"});
+    if (hd.spawned && hd.exit_code == 0) st.head = trim(hd.out);
 
     // Dirty entries: one porcelain line per changed/untracked path.
     CmdResult status = run({"git", "-C", repo_path, "status", "--porcelain"});

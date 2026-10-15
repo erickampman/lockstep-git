@@ -5,6 +5,7 @@
 #include <ctime>
 
 #include "git.h"
+#include "milestones.h"
 
 namespace lockstep {
 
@@ -34,6 +35,12 @@ MachineBlob gather(const Config& cfg) {
         r.behind = s.behind;
         r.clean = is_clean(s);
         r.readable = s.error.empty() && s.is_repo;
+        if (auto t = load_test_result(r.name)) {
+            r.tested = true;
+            r.test_ok = t->ok;
+            r.test_at = t->at;
+            r.test_current = !t->dirty && !s.head.empty() && t->commit == s.head;
+        }
         b.repos.push_back(std::move(r));
     }
     return b;
@@ -42,14 +49,17 @@ MachineBlob gather(const Config& cfg) {
 nlohmann::json to_json(const MachineBlob& b) {
     nlohmann::json repos = nlohmann::json::array();
     for (const auto& r : b.repos) {
-        repos.push_back({{"name", r.name},
-                         {"branch", r.branch},
-                         {"dirty", r.dirty},
-                         {"has_upstream", r.has_upstream},
-                         {"ahead", r.ahead},
-                         {"behind", r.behind},
-                         {"clean", r.clean},
-                         {"readable", r.readable}});
+        nlohmann::json e = {{"name", r.name},
+                            {"branch", r.branch},
+                            {"dirty", r.dirty},
+                            {"has_upstream", r.has_upstream},
+                            {"ahead", r.ahead},
+                            {"behind", r.behind},
+                            {"clean", r.clean},
+                            {"readable", r.readable}};
+        if (r.tested)
+            e["test"] = {{"ok", r.test_ok}, {"at", r.test_at}, {"current", r.test_current}};
+        repos.push_back(std::move(e));
     }
     return {{"v", 1},
             {"machine", b.machine},
@@ -73,6 +83,12 @@ std::optional<MachineBlob> blob_from_json(const nlohmann::json& j) {
             r.behind = e.value("behind", 0);
             r.clean = e.value("clean", true);
             r.readable = e.value("readable", true);
+            if (auto t = e.find("test"); t != e.end() && t->is_object()) {
+                r.tested = true;
+                r.test_ok = t->value("ok", false);
+                r.test_at = t->value("at", int64_t{0});
+                r.test_current = t->value("current", false);
+            }
             b.repos.push_back(std::move(r));
         }
     }

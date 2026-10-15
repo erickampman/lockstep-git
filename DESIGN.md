@@ -408,6 +408,30 @@ Not covered: unpushed commits made *inside* a submodule checkout (e.g. in
 being dirty, but unpushed submodule commits rely on
 `git push --recurse-submodules=check`.
 
+## Milestones and tests (Eric, 2026-10-15) — BUILT
+
+Coordinating milestones and testing across all the projects, on both machines.
+Decisions:
+
+- **The plan lives in each repo** as `MILESTONES.md`: plain Markdown, versioned,
+  readable on GitHub and by any tool. Parsed by `src/common/milestones.cpp`; format
+  in the README. No milestone state goes into the blob, since git already carries
+  the file to both machines.
+- **Tests run on demand, never on a timer.** `lockstep test` runs the platform's
+  command from the file's `## Tests` section through `/bin/sh` (the command comes
+  from the user's own repo, so a shell is fine here). The result goes to
+  `~/.local/state/lockstep/tests/<name>.json` (one file per repo, renamed into
+  place, so concurrent runs and the daemon never see half a file). The daemon reads
+  it into `status` and the blob as `test: {ok, at, current}`. `current` = ran
+  against today's `HEAD` with a clean tree. Output stays local.
+- **Review is manual too.** `lockstep review` is a deterministic Markdown report
+  (plan, open items, commits since the plan changed, tests per machine). The
+  judgment, i.e. which commits finished which items, is left to an AI reviewer
+  run when wanted: `skills/milestone-review` (Sonnet), which edits nothing
+  without a yes. A scheduled sweep was considered and declined.
+- Test status doesn't affect the tray's red/yellow/green, which stays about
+  git sync.
+
 ## Tray as a project launcher (Eric, 2026-10-08) — IDEA, not built
 
 Eric bounces among projects and terminals. The daemon already knows every watched

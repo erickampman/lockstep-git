@@ -4,13 +4,16 @@
 // socket every few seconds, tints the "¿?" mark green/yellow/red — the ¿ for
 // this machine, the ? for the other machine(s) — and notifies on state changes. "Add repo…" and "Remove repo" shell out to `lockstep
 // add`/`remove` — the config-mutation logic lives there, not here. Each local
-// repo's submenu runs `lockstep diff`/`commit`/`pull` the same way.
+// repo's submenu runs `lockstep diff`/`commit`/`pull`/`test` the same way, and
+// shows where the repo stands against its MILESTONES.md.
 
 #include <QApplication>
 #include <QColor>
+#include <QDesktopServices>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QIcon>
@@ -25,8 +28,11 @@
 #include <QStringList>
 #include <QSystemTrayIcon>
 #include <QTimer>
+#include <QUrl>
 
 #include <algorithm>
+#include <functional>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -42,6 +48,7 @@
 
 #include "config.h"  // lockstep::repo_name
 #include "ipc.h"
+#include "milestones.h"  // lockstep::kMilestonesFile, state_dir
 #include "paths.h"
 
 using nlohmann::json;
@@ -234,6 +241,40 @@ bool behindRemote(const json& r) {
     return r.value("has_upstream", false) && r.value("behind", 0) > 0;
 }
 
+// "tests ✓" / "tests ✗", flagged when the run predates the current code.
+QString testMark(const json& t) {
+    QString s = t.value("ok", false) ? QString::fromUtf8("tests ✓") : QString::fromUtf8("tests ✗");
+    if (!t.value("current", false)) s += QStringLiteral(" (stale)");
+    return s;
+}
+
+// "passed 2h ago" / "FAILED 1d ago (older code)", for a submenu row.
+QString testDetail(const json& t) {
+    QString s = (t.value("ok", false) ? QStringLiteral("passed ") : QStringLiteral("FAILED ")) +
+                QString::fromStdString(t.value("as_of", "?"));
+    if (!t.value("current", false)) s += QStringLiteral(" (older code or uncommitted changes)");
+    return s;
+}
+
+// " · M3 4/7 · tests ✓": the current milestone and test state, short enough
+// for a row title. A milestone titled "M3: Preset browser" shows as "M3".
+QString planSuffix(const json& r) {
+    QString s;
+    if (auto m = r.find("milestone"); m != r.end() && m->is_object()) {
+        if (m->contains("title")) {
+            QString t = QString::fromStdString(m->value("title", ""));
+            int colon = t.indexOf(':');
+            if (colon > 0 && colon <= 8) t = t.left(colon);
+            else if (t.size() > 18) t = t.left(17) + QString::fromUtf8("…");
+            s += QStringLiteral(" · %1 %2/%3").arg(t).arg(m->value("done", 0)).arg(m->value("total", 0));
+        } else if (m->value("all_done", false)) {
+            s += QStringLiteral(" · milestones done");
+        }
+    }
+    if (auto t = r.find("test"); t != r.end() && t->is_object()) s += QStringLiteral(" · ") + testMark(*t);
+    return s;
+}
+
 QString mark(bool clean) {
     return clean ? QString::fromUtf8("✓ ") : QString::fromUtf8("● ");  // ✓ / ●
 }
@@ -272,6 +313,10 @@ struct Tray {
     bool refreshPending = false;
     QElapsedTimer openedAt;
     QElapsedTimer closedAt;
+
+    // Repos (by path) with a `lockstep test` running, so the menu shows it
+    // and a second click doesn't start another.
+    std::set<QString> testing;
 
     // The "Add repo" picker. One instance means repeated clicks while it's up
     // raise it rather than stacking more pickers.
@@ -318,7 +363,7 @@ struct Tray {
     // pulled N commits, can't fast-forward), so surface its output, then
     // refresh so a pull or commit shows up right away.
     void runRepoAction(const QString& action, const QString& path,
-                       const QStringList& extra = {}) {
+                       const QStringList& extra = {}, std::function<void()> onDone = {}) {
         QStringList args{action, path};
         args << extra;
         QString title = QStringLiteral("lockstep ") + action + QStringLiteral(" — ") +
@@ -327,7 +372,7 @@ struct Tray {
         auto* p = new QProcess(qApp);
         p->setProcessEnvironment(launchEnv());
         QObject::connect(p, &QProcess::finished, p,
-                         [this, p, title](int code, QProcess::ExitStatus status) {
+                         [this, p, title, onDone](int code, QProcess::ExitStatus status) {
             QString out = (QString::fromUtf8(p->readAllStandardOutput()) +
                            QString::fromUtf8(p->readAllStandardError()))
                               .trimmed();
@@ -337,26 +382,105 @@ struct Tray {
                                  failed ? QSystemTrayIcon::Warning : QSystemTrayIcon::Information,
                                  6000);
             p->deleteLater();
+            if (onDone) onDone();
             refresh();
         });
-        QObject::connect(p, &QProcess::errorOccurred, p, [this, p, title](QProcess::ProcessError e) {
+        QObject::connect(p, &QProcess::errorOccurred, p, [this, p, title, onDone](QProcess::ProcessError e) {
             if (e != QProcess::FailedToStart) return;  // the rest also emit finished
             icon.showMessage(title, QStringLiteral("could not run ") + lockstepBin(),
                              QSystemTrayIcon::Warning, 6000);
             p->deleteLater();
+            if (onDone) onDone();
         });
         p->start(lockstepBin(), args);
     }
 
+    void runTests(const QString& path) {
+        if (!testing.insert(path).second) return;
+        icon.showMessage(QStringLiteral("lockstep test — ") + QFileInfo(path).fileName(),
+                         QStringLiteral("running…"), QSystemTrayIcon::Information, 3000);
+        runRepoAction(QStringLiteral("test"), path, {}, [this, path] { testing.erase(path); });
+        refresh();
+    }
+
+    void openFile(const QString& file) { QDesktopServices::openUrl(QUrl::fromLocalFile(file)); }
+
+    // Start a MILESTONES.md from a template (never over an existing one) and
+    // open it for editing.
+    void createMilestones(const QString& path) {
+        QString file = path + "/" + lockstep::kMilestonesFile;
+        if (!QFileInfo::exists(file)) {
+            QFile f(file);
+            if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+                icon.showMessage(QStringLiteral("lockstep"), QStringLiteral("could not create ") + file,
+                                 QSystemTrayIcon::Warning, 6000);
+                return;
+            }
+            f.write(QStringLiteral("# %1 milestones\n\n"
+                                   "## Tests\n"
+                                   "- mac: \n"
+                                   "- linux: \n\n"
+                                   "## M1: First milestone (due YYYY-MM-DD)\n"
+                                   "- [ ] First item\n")
+                        .arg(QFileInfo(path).fileName())
+                        .toUtf8());
+        }
+        openFile(file);
+        refresh();
+    }
+
+    // `lockstep review` for every watched repo, saved as Markdown in the
+    // state dir and opened in whatever handles .md files.
+    void reviewMilestones() {
+        QString out = QString::fromStdString(lockstep::state_dir()) + "/review.md";
+        auto* p = new QProcess(qApp);
+        p->setProcessEnvironment(launchEnv());
+        p->setStandardOutputFile(out);
+        QObject::connect(p, &QProcess::finished, p, [this, p, out](int code, QProcess::ExitStatus) {
+            if (code == 0) openFile(out);
+            else icon.showMessage(QStringLiteral("lockstep review"),
+                                  QString::fromUtf8(p->readAllStandardError()).trimmed(),
+                                  QSystemTrayIcon::Warning, 6000);
+            p->deleteLater();
+        });
+        p->start(lockstepBin(), {QStringLiteral("review")});
+    }
+
     // A local repo as a submenu of `parent`, titled with its status, holding
-    // the actions for it. Commit needs something to commit; pull needs an
-    // upstream, and stays enabled when not known to be behind because "behind"
-    // is only as fresh as the repo's last fetch (the pull fetches).
-    void addRepoMenu(QMenu* parent, const QString& title, const json& r) {
+    // its plan and test state, then the actions for it. Commit needs something
+    // to commit; pull needs an upstream, and stays enabled when not known to be
+    // behind because "behind" is only as fresh as the repo's last fetch (the
+    // pull fetches). `remoteTests` are "machine: result" rows from elsewhere.
+    void addRepoMenu(QMenu* parent, const QString& title, const json& r,
+                     const QStringList& remoteTests = {}) {
         QMenu* sub = parent->addMenu(title);
         QString path = QString::fromStdString(r.value("path", ""));
         bool readable = !r.contains("error");
         bool dirty = r.value("dirty", 0) > 0;
+
+        auto info = [sub](const QString& text) { sub->addAction(text)->setEnabled(false); };
+        json ms = r.value("milestone", json());
+        if (ms.is_object() && ms.contains("title")) {
+            QString line = QStringLiteral("Milestone %1 of %2: %3 — %4/%5 done")
+                               .arg(ms.value("index", 0) + 1)
+                               .arg(ms.value("count", 0))
+                               .arg(QString::fromStdString(ms.value("title", "")))
+                               .arg(ms.value("done", 0))
+                               .arg(ms.value("total", 0));
+            std::string due = ms.value("due", "");
+            if (!due.empty()) line += QStringLiteral(", due ") + QString::fromStdString(due);
+            info(line);
+        } else if (ms.is_object()) {
+            info(ms.value("all_done", false) ? QStringLiteral("All milestones complete")
+                                             : QStringLiteral("No milestones listed"));
+        }
+        if (auto t = r.find("test"); t != r.end() && t->is_object())
+            info(QStringLiteral("Tests here: ") + testDetail(*t));
+        else if (ms.is_object() && ms.value("has_tests", false))
+            info(QStringLiteral("Tests here: not run yet"));
+        for (const auto& line : remoteTests) info(QStringLiteral("Tests on ") + line);
+        if (ms.is_object() || !remoteTests.isEmpty()) sub->addSeparator();
+
         sub->addAction(QStringLiteral("View current changes"),
                        [this, path] { runRepoAction(QStringLiteral("diff"), path); })
             ->setEnabled(readable && dirty);
@@ -374,6 +498,19 @@ struct Tray {
                                   : QStringLiteral("Pull"),
                        [this, path] { runRepoAction(QStringLiteral("pull"), path); })
             ->setEnabled(readable && r.value("has_upstream", false));
+
+        sub->addSeparator();
+        bool running = testing.count(path) > 0;
+        sub->addAction(running ? QStringLiteral("Tests running…") : QStringLiteral("Run tests"),
+                       [this, path] { runTests(path); })
+            ->setEnabled(readable && !running && ms.is_object() && ms.value("has_tests", false));
+        if (ms.is_object())
+            sub->addAction(QStringLiteral("Open ") + lockstep::kMilestonesFile,
+                           [this, path] { openFile(path + "/" + lockstep::kMilestonesFile); });
+        else
+            sub->addAction(QStringLiteral("Create ") + lockstep::kMilestonesFile + QStringLiteral("…"),
+                           [this, path] { createMilestones(path); })
+                ->setEnabled(readable);
     }
 
     void addRepo() {
@@ -513,6 +650,15 @@ struct Tray {
         addInfo(QStringLiteral("lockstep — ") + headline);
         menu.addSeparator();
 
+        // Other machines' test results, by repo name, for each local submenu.
+        std::map<std::string, QStringList> remoteTests;
+        for (const auto& m : st.value("others", json::array()))
+            for (const auto& r : m.value("repos", json::array()))
+                if (auto t = r.find("test"); t != r.end() && t->is_object())
+                    remoteTests[r.value("name", "")]
+                        << QString::fromStdString(m.value("machine", "?")) + QStringLiteral(": ") +
+                               testDetail(*t);
+
         addInfo(QStringLiteral("This machine"));
         std::vector<std::pair<QString, json>> cleanHere;
         for (const auto& r : st.value("repos", json::array())) {
@@ -521,16 +667,20 @@ struct Tray {
             bool behind = behindRemote(r);
             bool fine = r.value("clean", true) && !behind && !r.contains("error");
             QString line = name + QStringLiteral(" — ") + describeRepo(r) +
-                           (behind ? QStringLiteral(" — pull before working") : QString());
+                           (behind ? QStringLiteral(" — pull before working") : QString()) +
+                           planSuffix(r);
+            const QStringList& rt = remoteTests[lockstep::repo_name(path)];
             if (fine)
                 cleanHere.emplace_back(mark(true) + line, r);
             else
-                addRepoMenu(&menu, QStringLiteral("  ") + mark(false) + line, r);
+                addRepoMenu(&menu, QStringLiteral("  ") + mark(false) + line, r, rt);
         }
         if (!cleanHere.empty()) {
             QMenu* clean = menu.addMenu(QStringLiteral("  ") + mark(true) +
                                         QStringLiteral("%1 clean").arg(cleanHere.size()));
-            for (const auto& [line, r] : cleanHere) addRepoMenu(clean, line, r);
+            for (const auto& [line, r] : cleanHere)
+                addRepoMenu(clean, line, r,
+                            remoteTests[lockstep::repo_name(r.value("path", ""))]);
         }
 
         menu.addSeparator();
@@ -552,7 +702,10 @@ struct Tray {
                     bool ok = r.value("clean", true) && !behind;  // clean and current
                     QString line = QString::fromStdString(r.value("name", "?")) +
                                    QStringLiteral(" — ") + describeRepo(r);
-                    all << mark(ok) + line;
+                    QString tests;
+                    if (auto t = r.find("test"); t != r.end() && t->is_object())
+                        tests = QStringLiteral(" · ") + testMark(*t);
+                    all << mark(ok) + line + tests;
                     if (!ok) attention << line;
                 }
                 QString summary = attention.isEmpty()
@@ -569,6 +722,7 @@ struct Tray {
         }
 
         menu.addSeparator();
+        menu.addAction(QStringLiteral("Review milestones…"), [this] { reviewMilestones(); });
         menu.addAction(QStringLiteral("Add repo…"), [this] { addRepo(); });
         if (!localNames.empty()) {
             QMenu* rm = menu.addMenu(QStringLiteral("Remove repo"));

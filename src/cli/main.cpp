@@ -8,6 +8,8 @@
 //   lockstep diff     visual diff of local changes / last commit
 //   lockstep commit   open a commit UI for a repo
 //   lockstep pull     fast-forward-only pull (all three: see repo_actions.h)
+//   lockstep test     run a repo's tests from its MILESTONES.md, record the result
+//   lockstep review   where each repo stands against its MILESTONES.md
 //
 // Everything here is IPC + formatting; the daemon holds the state.
 
@@ -24,6 +26,7 @@
 #include "crypto.h"
 #include "repo_actions.h"
 #include "install.h"
+#include "review.h"
 #include "ipc.h"
 #include "paths.h"
 #include "subprocess.h"
@@ -47,6 +50,9 @@ int usage(const char* argv0) {
                  "  commit    open a commit UI: lockstep commit [<name|path>]\n"
                  "            (GitHub Desktop, else git gui, else a terminal)\n"
                  "  pull      fast-forward-only pull: lockstep pull [<name|path>]\n"
+                 "  test      run the tests listed in MILESTONES.md: lockstep test [<name|path>]\n"
+                 "  review    milestone progress, recent commits and test results:\n"
+                 "            lockstep review [<name|path>]  (all watched repos by default)\n"
                  "  install   link binaries into ~/.local/bin, install hooks in watched\n"
                  "            repos, and run the daemon at login (re-run after config\n"
                  "            changes)\n"
@@ -279,14 +285,16 @@ int main(int argc, char** argv) {
         }
         return lockstep::cli::cmd_diff(target, last);
     }
-    if (cmd == "commit" || cmd == "pull") {
+    if (cmd == "commit" || cmd == "pull" || cmd == "test" || cmd == "review") {
         if (argc > 3 || (argc == 3 && argv[2][0] == '-')) {
             std::fprintf(stderr, "usage: lockstep %s [<name|path>]\n", cmd.c_str());
             return 2;
         }
         std::string target = argc == 3 ? argv[2] : "";
-        return cmd == "commit" ? lockstep::cli::cmd_commit(target)
-                               : lockstep::cli::cmd_pull(target);
+        if (cmd == "commit") return lockstep::cli::cmd_commit(target);
+        if (cmd == "pull") return lockstep::cli::cmd_pull(target);
+        if (cmd == "test") return lockstep::cli::cmd_test(target);
+        return lockstep::cli::cmd_review(target);
     }
     if (cmd == "-h" || cmd == "--help" || cmd == "help") { usage(argv[0]); return 0; }
 

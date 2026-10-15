@@ -9,6 +9,7 @@ struct RepoState {
     std::string path;            // the configured/expanded repo path
     bool is_repo = false;        // false if path isn't a git work tree
     std::string branch;          // current branch, or "HEAD" if detached
+    std::string head;            // short commit id of HEAD (empty before the first commit)
     int dirty = 0;               // count of changed + untracked entries
     bool has_upstream = false;   // true if the branch tracks a remote
     int ahead = 0;               // commits HEAD is ahead of upstream

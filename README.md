@@ -193,6 +193,50 @@ other machine's pending work there becomes a warning, not a block:
 Git submodules that point at a watched repo are detected automatically. The
 dependency must be watched on both machines to be checked.
 
+## Milestones and tests
+
+Give a project a `MILESTONES.md` at its root and lockstep tracks it:
+
+```markdown
+## Tests
+- mac: swift test
+- linux: cmake --build build && ctest --test-dir build
+
+## M3: Preset browser (due 2026-11-15)
+- [x] Load presets from disk
+- [ ] Browser UI
+```
+
+- Every `##` heading except **Tests** is a milestone, in order. The current one is
+  the first that still has an unchecked item. `(due YYYY-MM-DD)` sets its target date.
+- Test lines are `- mac: …`, `- linux: …` or `- all: …`, each run with `/bin/sh` in
+  the repo root.
+
+`lockstep test [<name|path>]` runs this machine's test command, keeps the output in
+`~/.local/state/lockstep/tests/<name>.log`, and records pass or fail. The result
+syncs to your other machines with the rest of the state (pass/fail and when, never
+the output). A result is marked stale once `HEAD` moves or if the run had
+uncommitted changes. Runs are killed after 30 minutes (`LOCKSTEP_TEST_TIMEOUT`, in
+seconds).
+
+`lockstep review [<name|path>]` prints, for every watched repo (or one), its
+current milestone and open items, the commits since `MILESTONES.md` last changed,
+and the latest test results on each machine.
+
+In the tray, each repo's row shows a short `· M3 4/7 · tests ✓` summary. Its
+submenu has the details, **Run tests**, and **Open** (or **Create**)
+`MILESTONES.md`. **Review milestones…** opens the `lockstep review` report.
+
+**AI review.** [skills/milestone-review](skills/milestone-review/SKILL.md) is a
+Claude Code skill that reads `lockstep review`, works out which open items recent
+commits seem to have finished, and flags overdue milestones and failing or stale
+tests. It only edits a `MILESTONES.md` when you say yes. To use it from any
+project, link it into your personal skills:
+
+```bash
+ln -s "$PWD/skills/milestone-review" ~/.claude/skills/milestone-review
+```
+
 ## Behavior you should know about
 
 - **It fails open.** If the rendezvous or key isn't configured, or the other
