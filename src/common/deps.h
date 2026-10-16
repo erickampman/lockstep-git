@@ -26,7 +26,7 @@ std::optional<std::string> find_repo_path(const Config& cfg, const std::string& 
 // Deduplicated, never includes `name` itself.
 std::vector<std::string> dependencies(const Config& cfg, const std::string& name);
 
-// A parent repo's committed submodule pin vs the standalone clone of that dep.
+// A parent repo's staged submodule pin vs the standalone clone of that dep.
 struct PinDrift {
     std::string dep_name;
     std::string sub_path;

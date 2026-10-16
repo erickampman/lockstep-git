@@ -86,8 +86,10 @@ std::vector<PinDrift> pin_drift(const Config& cfg, const std::string& repo_path)
         auto dep_path = find_repo_path(cfg, sub.dep_name);
         if (!dep_path) continue;
 
-        // The pin as committed in the parent's HEAD (not the submodule checkout).
-        CmdResult pin = run({"git", "-C", repo_path, "rev-parse", "HEAD:" + sub.sub_path});
+        // The pin as staged in the parent (not the submodule checkout): what the
+        // commit being checked will record, so bumping a pin doesn't warn about
+        // the old one. The same as HEAD's when nothing is staged.
+        CmdResult pin = run({"git", "-C", repo_path, "rev-parse", ":" + sub.sub_path});
         CmdResult head = run({"git", "-C", *dep_path, "rev-parse", "HEAD"});
         if (!pin.spawned || pin.exit_code != 0 || !head.spawned || head.exit_code != 0)
             continue;
